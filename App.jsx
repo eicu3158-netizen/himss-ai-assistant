@@ -208,6 +208,20 @@ function looksLikeGoogleMap(url) {
   return /google\.com\/maps|maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google/i.test(link);
 }
 
+function removeUrlsFromText(value) {
+  return cleanText(value)
+    .replace(/https?:\/\/[^\s]+/gi, '')
+    .replace(/www\.[^\s]+/gi, '')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+}
+
+function extractAddressText(value) {
+  const raw = cleanText(value);
+  if (!raw) return '';
+  return removeUrlsFromText(raw);
+}
+
 function buildGoogleMapSearchUrl(keyword) {
   const text = cleanText(keyword);
   if (!text) return '';
@@ -243,15 +257,18 @@ function extractReadablePlaceFromMapUrl(url) {
 
 function buildDisplayLocation(rawLocation, mapHref) {
   const locationText = cleanText(rawLocation);
+  const addressOnlyText = extractAddressText(rawLocation);
 
-  if (locationText && !looksLikeGoogleMap(locationText)) {
-    return locationText;
+  if (addressOnlyText) {
+    return addressOnlyText;
   }
 
   const parsedFromMap = extractReadablePlaceFromMapUrl(mapHref);
   if (parsedFromMap) return parsedFromMap;
 
-  if (mapHref) return '地址文字未填，已提供地圖連結';
+  if (mapHref || looksLikeGoogleMap(locationText)) {
+    return '地址文字未填，已提供地圖連結';
+  }
 
   return '';
 }
@@ -433,16 +450,18 @@ function mapTripRows(rawObjects) {
       const linkHref = normalizeLink(linkUrl);
       const localMapHref = normalizeLink(localMap);
 
-      const locationIsMap = locationHref && looksLikeGoogleMap(rawLocation);
+      const locationHasMap = looksLikeGoogleMap(rawLocation);
       const officialIsMap = officialHref && looksLikeGoogleMap(officialLink);
       const linkIsMap = linkHref && looksLikeGoogleMap(linkUrl);
 
+      const addressText = extractAddressText(rawLocation);
+
       const finalMapHref =
         localMapHref ||
-        (locationIsMap ? locationHref : '') ||
+        (locationHasMap ? locationHref : '') ||
         (officialIsMap ? officialHref : '') ||
         (linkIsMap ? linkHref : '') ||
-        (!locationIsMap && rawLocation ? buildGoogleMapSearchUrl(rawLocation) : '');
+        (addressText ? buildGoogleMapSearchUrl(addressText) : '');
 
       const locationDisplay = buildDisplayLocation(rawLocation, finalMapHref);
 
@@ -452,7 +471,7 @@ function mapTripRows(rawObjects) {
         date: normalizeDate(getValue(row, ['date'])),
         time: getValue(row, ['time']),
         activity: getValue(row, ['activity']),
-        location: locationIsMap ? '' : rawLocation,
+        location: addressText,
         locationDisplay,
         members: getValue(row, ['members']),
         contact: getValue(row, ['contact']),
@@ -554,28 +573,6 @@ function mapArtRows(rawObjects) {
 }
 
 // ===== 畫面元件 =====
-function StatCard({ title, value, hint, icon, tone = 'emerald' }) {
-  const toneMap = {
-    emerald: 'border-emerald-100 bg-emerald-50 text-emerald-700',
-    sky: 'border-sky-100 bg-sky-50 text-sky-700',
-    violet: 'border-violet-100 bg-violet-50 text-violet-700',
-    amber: 'border-amber-100 bg-amber-50 text-amber-700',
-  };
-
-  return (
-    <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-xs font-semibold tracking-[0.14em] text-slate-500">{title}</div>
-          <div className="mt-2 text-2xl font-extrabold text-slate-900">{value}</div>
-          {hint ? <div className="mt-1 text-sm text-slate-500">{hint}</div> : null}
-        </div>
-        <div className={`rounded-2xl border p-3 ${toneMap[tone] || toneMap.emerald}`}>{icon}</div>
-      </div>
-    </div>
-  );
-}
-
 function DetailRow({ icon, label, value }) {
   if (!value) return null;
 
@@ -1164,7 +1161,11 @@ export default function App() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: userText, context }),
+        body: JSON.stringify({
+          question: userText,
+          context,
+          currentDate: new Date().toLocaleDateString('en-CA').replace(/-/g, '/'),
+        }),
       });
 
       const rawText = await res.text();
@@ -1240,40 +1241,9 @@ export default function App() {
             2026 HIMSS+GTC 參訪團
           </h1>
 
-          <p className="mt-4 max-w-3xl text-sm leading-7 text-emerald-50 md:text-base">
+          <p className="mt-4 max-w-4xl text-sm leading-7 text-emerald-50 md:text-base">
             手機優先的 AI 行程助理網站，整合每日行程、國際航空、餐會、參訪、住宿、會議資訊、文件連結與任務準備。
           </p>
-
-          <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-            <StatCard
-              title="行程筆數"
-              value={tripData.length}
-              hint="含車程、餐敘、會議、參訪、住宿"
-              icon={<CalendarDays size={20} />}
-              tone="emerald"
-            />
-            <StatCard
-              title="團員人數"
-              value={peopleData.length}
-              hint="可用人員篩選與 AI 查詢"
-              icon={<Users size={20} />}
-              tone="sky"
-            />
-            <StatCard
-              title="班機資料"
-              value={taskData.length}
-              hint="出發、抵達、返台以任務表為主"
-              icon={<Plane size={20} />}
-              tone="violet"
-            />
-            <StatCard
-              title="參考文件"
-              value={referenceData.length}
-              hint="官方資訊、手冊、注意事項"
-              icon={<FileText size={20} />}
-              tone="amber"
-            />
-          </div>
         </div>
       </header>
 
