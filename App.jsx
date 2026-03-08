@@ -1,0 +1,1653 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Paperclip,
+  ExternalLink,
+  CalendarDays,
+  MapPin,
+  Clock,
+  Users,
+  Car,
+  MessageCircle,
+  Send,
+  Bot,
+  Sparkles,
+  AlertCircle,
+  UtensilsCrossed,
+  User,
+  BookOpen,
+  FileText,
+  Cpu,
+  ClipboardList,
+  Gift,
+  Plane,
+  ChevronRight,
+} from 'lucide-react';
+
+// ===== 1. Google Sheet CSV 匯出網址 =====
+const TRIP_CSV_URL =
+  'https://docs.google.com/spreadsheets/d/1-hXGxiOVY8fnVYKX-45Uty5cKYUhSQvo9gnsuW1D47Q/export?format=csv&gid=1007063747';
+const PEOPLE_CSV_URL =
+  'https://docs.google.com/spreadsheets/d/1-hXGxiOVY8fnVYKX-45Uty5cKYUhSQvo9gnsuW1D47Q/export?format=csv&gid=2047962001';
+const TASK_CSV_URL =
+  'https://docs.google.com/spreadsheets/d/1-hXGxiOVY8fnVYKX-45Uty5cKYUhSQvo9gnsuW1D47Q/export?format=csv&gid=1378242916';
+const PREP_CSV_URL =
+  'https://docs.google.com/spreadsheets/d/1-hXGxiOVY8fnVYKX-45Uty5cKYUhSQvo9gnsuW1D47Q/export?format=csv&gid=1478862405';
+const REFERENCE_CSV_URL =
+  'https://docs.google.com/spreadsheets/d/1-hXGxiOVY8fnVYKX-45Uty5cKYUhSQvo9gnsuW1D47Q/export?format=csv&gid=581197226';
+const DATE_CSV_URL =
+  'https://docs.google.com/spreadsheets/d/1-hXGxiOVY8fnVYKX-45Uty5cKYUhSQvo9gnsuW1D47Q/export?format=csv&gid=1003250941';
+const ART_CSV_URL =
+  'https://docs.google.com/spreadsheets/d/1-hXGxiOVY8fnVYKX-45Uty5cKYUhSQvo9gnsuW1D47Q/export?format=csv&gid=84464990';
+
+// ===== 2. 官方網站 =====
+const HIMSS_CONFERENCE_URL = 'https://www.himssconference.com/';
+const GTC_CONFERENCE_URL = 'https://www.nvidia.com/zh-tw/gtc/';
+
+// ===== 3. UI 分頁 =====
+const mainTabs = [
+  { key: 'daily', label: '每日行程' },
+  { key: 'flight', label: '國際航空' },
+  { key: 'meal', label: '餐會' },
+  { key: 'visit', label: '參訪' },
+  { key: 'stay', label: '住宿' },
+  { key: 'meetingRelated', label: '會議相關' },
+  { key: 'conference', label: 'Conference資訊' },
+  { key: 'taskPrep', label: '任務與準備' },
+  { key: 'notice', label: '重要資訊與注意事項' },
+  { key: 'ai', label: 'AI 助手' },
+];
+
+// ===== 4. 工具函式 =====
+function cleanText(value) {
+  return String(value ?? '').replace(/^\ufeff/, '').trim();
+}
+
+function parseCSV(csvText) {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < csvText.length; i += 1) {
+    const char = csvText[i];
+    const nextChar = csvText[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        cell += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      row.push(cell);
+      cell = '';
+    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && nextChar === '\n') i += 1;
+      row.push(cell);
+      if (row.some((item) => cleanText(item) !== '')) rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += char;
+    }
+  }
+
+  if (cell.length > 0 || row.length > 0) {
+    row.push(cell);
+    if (row.some((item) => cleanText(item) !== '')) rows.push(row);
+  }
+
+  return rows;
+}
+
+function rowsToObjects(rows) {
+  if (!rows || rows.length < 2) return [];
+  const headers = rows[0].map((h) => cleanText(h));
+
+  return rows
+    .slice(1)
+    .map((row) => {
+      const obj = {};
+      headers.forEach((header, idx) => {
+        obj[header] = cleanText(row[idx] ?? '');
+      });
+      return obj;
+    })
+    .filter((obj) => Object.values(obj).some((v) => cleanText(v) !== ''));
+}
+
+function getValue(obj, keys) {
+  for (const key of keys) {
+    if (obj[key] !== undefined && obj[key] !== null && cleanText(obj[key]) !== '') {
+      return cleanText(obj[key]);
+    }
+  }
+  return '';
+}
+
+function normalizeDate(rawDate) {
+  const cleaned = cleanText(rawDate);
+  if (!cleaned) return '';
+  const normalized = cleaned.replace(/-/g, '/');
+  const match = normalized.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+  if (!match) return cleaned;
+  const year = match[1];
+  const month = match[2].padStart(2, '0');
+  const day = match[3].padStart(2, '0');
+  return `${year}/${month}/${day}`;
+}
+
+function splitMembers(membersText) {
+  if (!membersText) return [];
+  return String(membersText)
+    .split(/[\n、,，/;；]+/)
+    .map((name) => cleanText(name))
+    .filter(Boolean);
+}
+
+function sortByDateTime(a, b) {
+  const aKey = `${a.date || ''} ${a.time || ''}`;
+  const bKey = `${b.date || ''} ${b.time || ''}`;
+  return aKey.localeCompare(bKey, 'zh-Hant');
+}
+
+function includesMember(membersText, selectedMember) {
+  if (!selectedMember || selectedMember === '全部') return true;
+  return splitMembers(membersText).some(
+    (name) => name === selectedMember || name.includes(selectedMember)
+  );
+}
+
+function normalizeLink(value) {
+  const raw = cleanText(value);
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^www\./i.test(raw)) return `https://${raw}`;
+  return '';
+}
+
+function looksLikeGoogleMap(url) {
+  const link = normalizeLink(url);
+  return /google\.com\/maps|maps\.app\.goo\.gl|goo\.gl\/maps/i.test(link);
+}
+
+function buildEmbedMapUrl(item) {
+  const mapLink = normalizeLink(item.localMap);
+  const locationText = cleanText(item.location);
+
+  if (locationText) {
+    return `https://www.google.com/maps?q=${encodeURIComponent(locationText)}&output=embed`;
+  }
+
+  if (mapLink) {
+    return `https://www.google.com/maps?q=${encodeURIComponent(mapLink)}&output=embed`;
+  }
+
+  return '';
+}
+
+function buildHimssDailyLinks(referenceData) {
+  const map = {
+    '3/9': '',
+    '3/10': '',
+    '3/11': '',
+    '3/12': '',
+  };
+
+  referenceData.forEach((item) => {
+    const title = cleanText(item.item);
+    const safeLink = normalizeLink(item.link);
+    if (!safeLink) return;
+
+    if (/0309|03\/09|3\/9/i.test(title)) map['3/9'] = safeLink;
+    if (/0310|03\/10|3\/10/i.test(title)) map['3/10'] = safeLink;
+    if (/0311|03\/11|3\/11/i.test(title)) map['3/11'] = safeLink;
+    if (/0312|03\/12|3\/12/i.test(title)) map['3/12'] = safeLink;
+  });
+
+  return map;
+}
+
+function getCardSurface(item) {
+  const type = cleanText(item.activityType);
+  const category = cleanText(item.category);
+
+  if (type.includes('餐會') || type.includes('餐敘') || category.includes('餐')) {
+    return 'bg-amber-50/60 border-amber-100';
+  }
+  if (type.includes('參訪') || category.includes('參訪')) {
+    return 'bg-violet-50/60 border-violet-100';
+  }
+  if (type.includes('住宿') || category.includes('住宿')) {
+    return 'bg-emerald-50/60 border-emerald-100';
+  }
+  if (type.includes('會議') || category.includes('會議')) {
+    return 'bg-sky-50/60 border-sky-100';
+  }
+  if (category.includes('會議相關')) {
+    return 'bg-blue-50/60 border-blue-100';
+  }
+  if (type.includes('班機') || category.includes('班機')) {
+    return 'bg-slate-50 border-slate-200';
+  }
+  return 'bg-white border-slate-200';
+}
+
+function getTypeBadge(item) {
+  const type = cleanText(item.activityType);
+  const category = cleanText(item.category);
+
+  if (type.includes('餐會') || type.includes('餐敘') || category.includes('餐')) {
+    return { label: '餐會', cls: 'bg-amber-50 text-amber-700 border-amber-200' };
+  }
+  if (type.includes('參訪') || category.includes('參訪')) {
+    return { label: '參訪', cls: 'bg-violet-50 text-violet-700 border-violet-200' };
+  }
+  if (type.includes('住宿') || category.includes('住宿')) {
+    return { label: '住宿', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+  }
+  if (type.includes('會議') || category.includes('會議')) {
+    return { label: '會議', cls: 'bg-sky-50 text-sky-700 border-sky-200' };
+  }
+  if (category.includes('會議相關')) {
+    return { label: '會議相關', cls: 'bg-blue-50 text-blue-700 border-blue-200' };
+  }
+  if (type.includes('班機') || category.includes('班機')) {
+    return { label: '飛資訊', cls: 'bg-slate-100 text-slate-700 border-slate-200' };
+  }
+  return {
+    label: category || type || '行程',
+    cls: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+  };
+}
+
+function matchType(item, target) {
+  const t = cleanText(item.activityType);
+  const c = cleanText(item.category);
+  const activity = cleanText(item.activity);
+
+  if (target === '餐會') {
+    return (
+      t.includes('餐會') ||
+      t.includes('餐敘') ||
+      c.includes('餐') ||
+      activity.includes('餐') ||
+      activity.includes('Reception') ||
+      activity.includes('聚餐') ||
+      activity.includes('晚宴')
+    );
+  }
+  if (target === '參訪') {
+    return t.includes('參訪') || c.includes('參訪') || activity.includes('參訪');
+  }
+  if (target === '住宿') {
+    return (
+      t.includes('住宿') ||
+      c.includes('住宿') ||
+      activity.includes('住宿') ||
+      activity.includes('Harrah')
+    );
+  }
+  if (target === '會議') {
+    return t.includes('會議') || c.includes('會議');
+  }
+  if (target === '會議相關') {
+    return c.includes('會議相關') || t.includes('會議相關');
+  }
+  return false;
+}
+
+function extractDateTokenFromQuestion(question) {
+  const q = cleanText(question).replace(/-/g, '/');
+  let match = q.match(/(20\d{2})\/(\d{1,2})\/(\d{1,2})/);
+  if (match) return normalizeDate(match[0]);
+
+  match = q.match(/(^|[^0-9])(\d{1,2})\/(\d{1,2})(?!\d)/);
+  if (match) return normalizeDate(`2026/${match[2]}/${match[3]}`);
+
+  return '';
+}
+
+function normalizeQuestionTypos(q) {
+  let text = cleanText(q);
+  const rules = [
+    [/晚歺|晩餐|晩歺/g, '晚餐'],
+    [/午歺/g, '午餐'],
+    [/班雞|班基|搬機/g, '班機'],
+    [/哪理|那理|那裡/g, '哪裡'],
+    [/聖何西|圣荷西|聖荷矽/g, '聖荷西'],
+    [/回台灣|回台/g, '返台'],
+  ];
+  rules.forEach(([regex, replacement]) => {
+    text = text.replace(regex, replacement);
+  });
+  return text;
+}
+
+function findBestMemberInQuestion(q, members) {
+  const exact = members.find((name) => q.includes(name));
+  if (exact) return exact;
+
+  let bestName = '';
+  let bestScore = 0;
+
+  members.forEach((name) => {
+    const chars = [...name];
+    const hitCount = chars.filter((ch) => q.includes(ch)).length;
+    const score = chars.length ? hitCount / chars.length : 0;
+    if (score > bestScore) {
+      bestScore = score;
+      bestName = name;
+    }
+  });
+
+  return bestScore >= 0.66 ? bestName : '';
+}
+
+// ===== 5. 資料映射 =====
+function mapTripRows(rawObjects) {
+  return rawObjects
+    .map((row) => {
+      const rawLocation = getValue(row, ['location']);
+      const officialLink = getValue(row, ['officialLink']);
+      const linkUrl = getValue(row, ['linkUrl']);
+      const localMap = getValue(row, ['localmap', 'localMap', 'mapLink']);
+
+      const locationIsMap = looksLikeGoogleMap(rawLocation);
+      const officialIsMap = looksLikeGoogleMap(officialLink);
+      const linkIsMap = looksLikeGoogleMap(linkUrl);
+
+      return {
+        category: getValue(row, ['category']),
+        activityType: getValue(row, ['activityType']),
+        date: normalizeDate(getValue(row, ['date'])),
+        time: getValue(row, ['time']),
+        activity: getValue(row, ['activity']),
+        location: locationIsMap ? '' : rawLocation,
+        members: getValue(row, ['members']),
+        contact: getValue(row, ['contact']),
+        transitTime: getValue(row, ['transitTime']),
+        note: getValue(row, ['note']),
+        attachmentUrl: getValue(row, ['attachmentUrl']),
+        localMap:
+          localMap ||
+          (locationIsMap ? rawLocation : '') ||
+          (officialIsMap ? officialLink : '') ||
+          (linkIsMap ? linkUrl : ''),
+        linkUrl: linkIsMap ? '' : linkUrl,
+        officialLink: officialIsMap ? '' : officialLink,
+      };
+    })
+    .filter(
+      (item) =>
+        item.category ||
+        item.activityType ||
+        item.date ||
+        item.activity ||
+        item.location ||
+        item.members
+    );
+}
+
+function mapPeopleRows(rawObjects) {
+  return rawObjects
+    .map((row) => ({
+      name: getValue(row, ['name']),
+      englishName: getValue(row, ['englishName']),
+      task: getValue(row, ['task', '任務']),
+      phone: getValue(row, ['phone']),
+      note: getValue(row, ['note']),
+    }))
+    .filter((item) => item.name);
+}
+
+function mapTaskRows(rawObjects) {
+  return rawObjects
+    .map((row) => ({
+      name: getValue(row, ['name']),
+      fly: getValue(row, ['fly']),
+      diet: getValue(row, ['diet']),
+      foodsAvoid: getValue(row, ['foods avoid', 'foodsAvoid']),
+    }))
+    .filter((item) => item.name || item.fly || item.diet || item.foodsAvoid);
+}
+
+function mapSimpleRows(rawObjects) {
+  return rawObjects.map((row) => {
+    const cleaned = {};
+    Object.keys(row).forEach((key) => {
+      cleaned[cleanText(key)] = cleanText(row[key]);
+    });
+    return cleaned;
+  });
+}
+
+function mapDateRows(rawObjects) {
+  return rawObjects
+    .map((row) => normalizeDate(getValue(row, ['date'])))
+    .filter(Boolean);
+}
+
+function mapReferenceRows(rawObjects) {
+  return rawObjects
+    .map((row) => ({
+      item: getValue(row, ['項目', 'item']),
+      link: getValue(row, ['連結', 'link']),
+      content: getValue(row, ['內容', 'content', '摘要', 'note']),
+    }))
+    .filter((item) => item.item || item.link || item.content);
+}
+
+function mapArtRows(rawObjects) {
+  return rawObjects
+    .map((row) => ({
+      section: getValue(row, ['section', '區塊']),
+      title: getValue(row, ['title', '標題']),
+      imageUrl: getValue(row, ['imageUrl', '圖片']),
+      linkUrl: getValue(row, ['linkUrl', '連結']),
+      note: getValue(row, ['note', '備註']),
+    }))
+    .filter((item) => item.section || item.imageUrl || item.title);
+}
+
+// ===== 6. 畫面元件 =====
+function MapPreview({ item }) {
+  const mapHref = normalizeLink(item.localMap);
+  const embedUrl = buildEmbedMapUrl(item);
+
+  if (!mapHref || !embedUrl) return null;
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <MapPin size={16} className="text-emerald-700" />
+          地圖預覽
+        </div>
+        <a
+          href={mapHref}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-sm font-medium text-emerald-700 hover:text-emerald-800"
+        >
+          開啟 Google Map
+          <ChevronRight size={14} />
+        </a>
+      </div>
+      <iframe
+        title={`map-${item.activity || item.location}`}
+        src={embedUrl}
+        className="h-64 w-full"
+        loading="lazy"
+        referrerPolicy="no-referrer-when-downgrade"
+      />
+    </div>
+  );
+}
+
+function ResourceButtons({ item }) {
+  const attachmentHref = normalizeLink(item.attachmentUrl);
+  const mapHref = normalizeLink(item.localMap);
+  const webHref = normalizeLink(item.officialLink || item.linkUrl);
+
+  if (!attachmentHref && !mapHref && !webHref) return null;
+
+  return (
+    <div className="mt-4 flex flex-wrap gap-2">
+      {mapHref && (
+        <a
+          href={mapHref}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-800"
+          title="地圖"
+        >
+          <MapPin size={16} />
+          地圖
+        </a>
+      )}
+
+      {webHref && (
+        <a
+          href={webHref}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-800"
+          title="網頁"
+        >
+          <ExternalLink size={16} />
+          網頁
+        </a>
+      )}
+
+      {attachmentHref && (
+        <a
+          href={attachmentHref}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800"
+          title="附件"
+        >
+          <Paperclip size={16} />
+          附件
+        </a>
+      )}
+    </div>
+  );
+}
+
+function DetailRow({ icon, label, value }) {
+  if (!value) return null;
+
+  return (
+    <div className="rounded-2xl border border-white/70 bg-white/70 p-3">
+      <div className="flex items-start gap-2">
+        <div className="mt-0.5 text-slate-500">{icon}</div>
+        <div className="min-w-0">
+          <div className="text-xs font-bold text-slate-500">{label}</div>
+          <div className="break-words whitespace-pre-wrap text-sm text-slate-700">{value}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoCard({ item }) {
+  const badge = getTypeBadge(item);
+
+  return (
+    <article className={`rounded-3xl border p-4 shadow-sm md:p-6 ${getCardSurface(item)}`}>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-bold ${badge.cls}`}>
+          {badge.label}
+        </span>
+
+        {item.activityType && item.activityType !== badge.label && (
+          <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+            {item.activityType}
+          </span>
+        )}
+
+        {item.category && item.category !== badge.label && item.category !== item.activityType && (
+          <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+            {item.category}
+          </span>
+        )}
+      </div>
+
+      <div className="mb-4 text-lg font-bold text-slate-800">
+        {item.activity || '未命名活動'}
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <DetailRow icon={<CalendarDays size={16} />} label="日期" value={item.date} />
+        <DetailRow icon={<Clock size={16} />} label="時間" value={item.time} />
+        <DetailRow icon={<MapPin size={16} />} label="地點" value={item.location} />
+        <DetailRow icon={<Users size={16} />} label="成員" value={item.members} />
+        <DetailRow icon={<User size={16} />} label="活動窗口" value={item.contact} />
+        <DetailRow icon={<Car size={16} />} label="交通時間" value={item.transitTime} />
+        <DetailRow icon={<AlertCircle size={16} />} label="備註" value={item.note} />
+      </div>
+
+      <ResourceButtons item={item} />
+      <MapPreview item={item} />
+    </article>
+  );
+}
+
+function EmptyCard({ title = '目前尚無資料' }) {
+  return (
+    <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-6 text-center text-slate-500 shadow-sm">
+      {title}
+    </div>
+  );
+}
+
+function SectionCard({ title, icon, children }) {
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+      <div className="mb-4 flex items-center gap-2">
+        {icon}
+        <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// ===== 7. 主程式 =====
+export default function App() {
+  const [tripData, setTripData] = useState([]);
+  const [peopleData, setPeopleData] = useState([]);
+  const [taskData, setTaskData] = useState([]);
+  const [prepData, setPrepData] = useState([]);
+  const [referenceData, setReferenceData] = useState([]);
+  const [dateData, setDateData] = useState([]);
+  const [artData, setArtData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+
+  const [activeMainTab, setActiveMainTab] = useState('daily');
+  const [selectedDate, setSelectedDate] = useState('全選');
+  const [selectedSubDate, setSelectedSubDate] = useState('全選');
+  const [selectedMember, setSelectedMember] = useState('全部');
+  const [selectedFlightMember, setSelectedFlightMember] = useState('全部');
+  const [noticeTab, setNoticeTab] = useState('files');
+
+  const [messages, setMessages] = useState([
+    {
+      role: 'assistant',
+      text: '您好，我是秀傳 AI 小秘書。請問有甚麼需要我協助？例如：3/15行程、3/15誰回台灣、黃靖媛3/8晚餐在哪裡吃。',
+    },
+  ]);
+  const [input, setInput] = useState('');
+  const [thinking, setThinking] = useState(false);
+  const chatEndRef = useRef(null);
+
+  useEffect(() => {
+    async function fetchCsv(url, label) {
+      if (!url) return [];
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`無法讀取 ${label}：HTTP ${res.status}`);
+
+      const text = await res.text();
+      if (text.includes('<!DOCTYPE html') || text.includes('<html')) {
+        throw new Error(`${label} 讀到的是 HTML，不是 CSV，請確認網址是否為 export?format=csv`);
+      }
+
+      return rowsToObjects(parseCSV(text));
+    }
+
+    async function fetchAllData() {
+      try {
+        setLoading(true);
+        setLoadError('');
+
+        const [
+          tripObjects,
+          peopleObjects,
+          taskObjects,
+          prepObjects,
+          referenceObjects,
+          dateObjects,
+          artObjects,
+        ] = await Promise.all([
+          fetchCsv(TRIP_CSV_URL, 'web-行程規劃'),
+          fetchCsv(PEOPLE_CSV_URL, 'web-人員'),
+          fetchCsv(TASK_CSV_URL, 'web-任務'),
+          fetchCsv(PREP_CSV_URL, 'web-行前準備'),
+          fetchCsv(REFERENCE_CSV_URL, 'web-參考資料連結'),
+          fetchCsv(DATE_CSV_URL, 'web-日期'),
+          fetchCsv(ART_CSV_URL, 'web-美工'),
+        ]);
+
+        setTripData(mapTripRows(tripObjects));
+        setPeopleData(mapPeopleRows(peopleObjects));
+        setTaskData(mapTaskRows(taskObjects));
+        setPrepData(mapSimpleRows(prepObjects));
+        setReferenceData(mapReferenceRows(referenceObjects));
+        setDateData(mapDateRows(dateObjects));
+        setArtData(mapArtRows(artObjects));
+      } catch (error) {
+        console.error(error);
+        setLoadError(error?.message || '資料載入失敗，請確認所有網址都是 CSV 匯出網址。');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchAllData();
+  }, []);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, thinking]);
+
+  const allDates = useMemo(() => {
+    const fromDateSheet = dateData.filter(Boolean);
+    const fromTrip = tripData.map((item) => item.date).filter(Boolean);
+    return ['全選', ...Array.from(new Set([...fromDateSheet, ...fromTrip])).sort()];
+  }, [dateData, tripData]);
+
+  const allMembers = useMemo(() => {
+    const fromPeople = peopleData.map((p) => p.name).filter(Boolean);
+    const fromTrip = tripData.flatMap((item) => splitMembers(item.members));
+    return ['全部', ...Array.from(new Set([...fromPeople, ...fromTrip]))];
+  }, [peopleData, tripData]);
+
+  const memberFilteredTrip = useMemo(() => {
+    if (selectedMember === '全部') return tripData;
+    return tripData.filter((item) => includesMember(item.members, selectedMember));
+  }, [tripData, selectedMember]);
+
+  const dailyData = useMemo(() => {
+    let result = [...memberFilteredTrip];
+    if (selectedDate !== '全選') {
+      result = result.filter((item) => item.date === selectedDate);
+    }
+    return result.sort(sortByDateTime);
+  }, [memberFilteredTrip, selectedDate]);
+
+  const mealData = useMemo(() => {
+    let result = tripData.filter((item) => matchType(item, '餐會'));
+    if (selectedSubDate !== '全選') result = result.filter((item) => item.date === selectedSubDate);
+    return result.sort(sortByDateTime);
+  }, [tripData, selectedSubDate]);
+
+  const visitData = useMemo(() => {
+    let result = tripData.filter((item) => matchType(item, '參訪'));
+    if (selectedSubDate !== '全選') result = result.filter((item) => item.date === selectedSubDate);
+    return result.sort(sortByDateTime);
+  }, [tripData, selectedSubDate]);
+
+  const stayData = useMemo(() => {
+    let result = tripData.filter((item) => matchType(item, '住宿'));
+    if (selectedSubDate !== '全選') result = result.filter((item) => item.date === selectedSubDate);
+    return result.sort(sortByDateTime);
+  }, [tripData, selectedSubDate]);
+
+  const meetingRelatedData = useMemo(() => {
+    let result = tripData.filter((item) => matchType(item, '會議相關'));
+    if (selectedSubDate !== '全選') result = result.filter((item) => item.date === selectedSubDate);
+    return result.sort(sortByDateTime);
+  }, [tripData, selectedSubDate]);
+
+  const conferenceData = useMemo(() => {
+    let result = tripData.filter((item) => matchType(item, '會議'));
+    if (selectedSubDate !== '全選') result = result.filter((item) => item.date === selectedSubDate);
+    return result.sort(sortByDateTime);
+  }, [tripData, selectedSubDate]);
+
+  const internationalFlightData = useMemo(() => {
+    return taskData.filter((item) => cleanText(item.name) || cleanText(item.fly));
+  }, [taskData]);
+
+  const filteredInternationalFlightData = useMemo(() => {
+    if (selectedFlightMember === '全部') return internationalFlightData;
+    return internationalFlightData.filter((item) => {
+      const name = cleanText(item.name);
+      return name === selectedFlightMember || name.includes(selectedFlightMember);
+    });
+  }, [internationalFlightData, selectedFlightMember]);
+
+  const workAssignments = useMemo(() => {
+    return peopleData.filter((person) => cleanText(person.name) || cleanText(person.task));
+  }, [peopleData]);
+
+  const dietInfoData = useMemo(() => {
+    return taskData.filter((item) => cleanText(item.name) || cleanText(item.diet) || cleanText(item.foodsAvoid));
+  }, [taskData]);
+
+  const tripPlanLink = useMemo(() => {
+    const raw = referenceData.find((item) => item.item.includes('出訪團規劃'))?.link || '';
+    return normalizeLink(raw);
+  }, [referenceData]);
+
+  const himssHandbookLink = useMemo(() => {
+    const raw =
+      referenceData.find(
+        (item) => item.item.includes('HIMSS行程資料') || item.item.includes('手冊')
+      )?.link || '';
+    return normalizeLink(raw);
+  }, [referenceData]);
+
+  const himssConferenceReferenceLink = useMemo(() => {
+    const raw =
+      referenceData.find((item) => item.item.includes('HIMSS conference'))?.link || '';
+    return normalizeLink(raw) || HIMSS_CONFERENCE_URL;
+  }, [referenceData]);
+
+  const himssDailyLinks = useMemo(() => {
+    return buildHimssDailyLinks(referenceData);
+  }, [referenceData]);
+
+  const travelNoticeItems = useMemo(() => {
+    return referenceData.filter((item) => {
+      const title = cleanText(item.item);
+      return (
+        title.includes('飛資得') ||
+        title.includes('氣候') ||
+        title.includes('電源') ||
+        title.includes('旅行社') ||
+        title.includes('聯繫') ||
+        title.includes('注意事項')
+      );
+    });
+  }, [referenceData]);
+
+  const quickQuestions = [
+    '3/9有誰會從台灣搭機出發',
+    '3/15行程',
+    '3/15誰回台灣',
+    '3/15那些人搭機返台',
+    '黃靖媛3/8晚餐在哪裡吃',
+    '郭昭宏何時抵達聖荷西',
+    '人員名單',
+    '禮品準備',
+    'HIMSS 官方資訊',
+    'GTC 官方網站',
+  ];
+
+  function fallbackAnswer(q) {
+    const query = normalizeQuestionTypos(q);
+
+    if (!query) return '請先輸入問題。';
+
+    if (query.includes('人員名單')) {
+      const names = (peopleData || []).map((p) => p.name).filter(Boolean);
+      return names.length ? `人員名單如下：\n${names.join('、')}` : '目前無人員名單資料。';
+    }
+
+    if (query.includes('禮品') || query.includes('準備')) {
+      return prepData && prepData.length
+        ? '已有禮品準備與行前準備資料，請至「任務與準備」查看。'
+        : '目前無禮品準備資料。';
+    }
+
+    if (query.includes('HIMSS')) {
+      return himssConferenceReferenceLink
+        ? `HIMSS 官方資訊：\n${himssConferenceReferenceLink}`
+        : '目前無 HIMSS 官方資訊連結。';
+    }
+
+    if (query.includes('GTC')) {
+      return GTC_CONFERENCE_URL
+        ? `GTC 官方網站：\n${GTC_CONFERENCE_URL}`
+        : '目前無 GTC 官方網站連結。';
+    }
+
+    const foundDate = extractDateTokenFromQuestion(query);
+
+    if (foundDate && query.includes('行程')) {
+      const items = tripData.filter((item) => item.date === foundDate).sort(sortByDateTime);
+      if (!items.length) return `${foundDate} 目前沒有行程資料。`;
+
+      return `${foundDate} 行程如下：\n${items
+        .map(
+          (item) =>
+            `• ${item.time || '時間未填'} ${item.activity || '未命名行程'}${
+              item.location ? `｜${item.location}` : ''
+            }`
+        )
+        .join('\n')}`;
+    }
+
+    if (foundDate && (query.includes('返台') || query.includes('回台灣'))) {
+      const names = internationalFlightData
+        .filter((item) => {
+          const flyText = cleanText(item.fly);
+          return (
+            flyText.includes(foundDate) &&
+            (flyText.includes('返程') ||
+              flyText.includes('回程') ||
+              flyText.includes('台北桃園') ||
+              flyText.includes('桃園') ||
+              flyText.includes('(TPE)') ||
+              flyText.includes('台灣'))
+          );
+        })
+        .map((item) => item.name)
+        .filter(Boolean);
+
+      return names.length
+        ? `${foundDate} 搭機返台人員如下：\n${names.join('、')}`
+        : `${foundDate} 目前無明確返台班機資料。`;
+    }
+
+    const allNames = [...new Set(peopleData.map((p) => p.name).filter(Boolean))];
+    const foundMember = findBestMemberInQuestion(query, allNames);
+
+    if (foundMember && query.includes('行程')) {
+      const items = tripData
+        .filter((item) => includesMember(item.members, foundMember))
+        .sort(sortByDateTime);
+
+      if (!items.length) return `${foundMember} 目前沒有行程資料。`;
+
+      return `${foundMember} 的行程如下：\n${items
+        .map(
+          (item) =>
+            `• ${item.date} ${item.time || '時間未填'} ${item.activity || '未命名行程'}${
+              item.location ? `｜${item.location}` : ''
+            }`
+        )
+        .join('\n')}`;
+    }
+
+    return (
+      '目前尚未成功以 AI 精準回答，因此暫時以基本規則回覆。\n' +
+      '您可以改問例如：3/15行程、3/15那些人搭機返台、黃靖媛3/8晚餐在哪裡吃、郭昭宏何時抵達聖荷西。'
+    );
+  }
+
+  async function handleSendMessage(e, presetText) {
+    if (e) e.preventDefault();
+
+    const userText = cleanText(presetText ?? input);
+    if (!userText) return;
+
+    setThinking(true);
+
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', text: userText },
+    ]);
+
+    if (!presetText) {
+      setInput('');
+    }
+
+    try {
+      const context = {
+        tripData,
+        peopleData,
+        taskData,
+        prepData,
+        referenceData,
+      };
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          question: userText,
+          context,
+        }),
+      });
+
+      const rawText = await res.text();
+      console.log('/api/chat raw response =', rawText);
+
+      let data = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch (parseError) {
+        throw new Error(`API 回傳不是合法 JSON：${rawText || '空回應'}`);
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: data.answer || 'AI 暫時沒有回應。',
+        },
+      ]);
+
+      setThinking(false);
+    } catch (error) {
+      console.error('AI 呼叫失敗：', error);
+
+      setThinking(false);
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text:
+            `目前尚未成功連到 OpenAI API。\n錯誤訊息：${error?.message || '未知錯誤'}\n\n` +
+            fallbackAnswer(userText),
+        },
+      ]);
+    }
+  }
+
+  function renderDateFilter() {
+    return (
+      <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
+        {allDates.map((date) => (
+          <button
+            key={date}
+            onClick={() => setSelectedSubDate(date)}
+            className={`flex-shrink-0 rounded-2xl px-4 py-3 text-sm font-medium transition-all ${
+              selectedSubDate === date
+                ? 'bg-emerald-700 text-white'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            {date}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-100 text-slate-900">
+      <header className="relative overflow-hidden bg-gradient-to-r from-slate-950 via-emerald-900 to-lime-700 text-white shadow-xl">
+        <div className="absolute inset-0 opacity-15">
+          <div className="absolute -right-8 -top-12 h-40 w-40 rounded-full bg-lime-300 blur-3xl" />
+          <div className="absolute bottom-0 left-8 h-32 w-32 rounded-full bg-emerald-300 blur-3xl" />
+        </div>
+
+        <div className="relative mx-auto max-w-6xl px-4 py-5 md:px-6 md:py-8">
+          <div className="text-2xl font-extrabold tracking-wide text-lime-100 md:text-3xl">
+            秀傳醫療體系
+          </div>
+
+          <h1 className="mt-2 text-2xl font-extrabold leading-tight tracking-tight md:text-4xl">
+            2026 HIMSS+GTC 參訪團
+          </h1>
+
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-emerald-50 md:text-base md:leading-7">
+            快速掌握每日行程、國際航空、餐會、參訪、住宿、會議、任務與準備、重要資訊與注意事項
+          </p>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-3 py-4 md:px-6 md:py-6">
+        <section className="mb-4 rounded-3xl border border-slate-200 bg-white p-3 shadow-sm md:mb-6 md:p-5">
+          <div className="grid grid-cols-2 gap-2 md:flex md:flex-wrap">
+            {mainTabs.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => {
+                  setActiveMainTab(tab.key);
+                  setSelectedSubDate('全選');
+                }}
+                className={`rounded-2xl px-4 py-3 text-sm font-medium transition-all ${
+                  activeMainTab === tab.key
+                    ? 'bg-emerald-700 text-white shadow'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {loading && <EmptyCard title="資料載入中..." />}
+        {!loading && loadError && <EmptyCard title={loadError} />}
+
+        {!loading && !loadError && activeMainTab === 'daily' && (
+          <section className="space-y-4">
+            <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
+              <h2 className="text-xl font-bold md:text-2xl">每日行程</h2>
+              <p className="mt-2 text-sm text-slate-600 md:text-base">可逐日查看全部安排，並依人員篩選。</p>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_280px]">
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {allDates.map((date) => (
+                    <button
+                      key={date}
+                      onClick={() => setSelectedDate(date)}
+                      className={`flex-shrink-0 rounded-2xl px-4 py-3 text-sm font-medium transition-all ${
+                        selectedDate === date
+                          ? 'bg-emerald-700 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      {date}
+                    </button>
+                  ))}
+                </div>
+
+                <div>
+                  <div className="mb-2 text-sm font-semibold text-slate-600">人員</div>
+                  <select
+                    value={selectedMember}
+                    onChange={(e) => setSelectedMember(e.target.value)}
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  >
+                    {allMembers.map((member) => (
+                      <option key={member} value={member}>
+                        {member}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {dailyData.length > 0 ? (
+              dailyData.map((item, index) => (
+                <InfoCard key={`${item.date}-${item.time}-${item.activity}-${index}`} item={item} />
+              ))
+            ) : (
+              <EmptyCard title={`${selectedDate} 目前尚無符合條件的安排`} />
+            )}
+          </section>
+        )}
+
+        {!loading && !loadError && activeMainTab === 'flight' && (
+          <section className="space-y-4">
+            <SectionCard title="國際航空" icon={<Plane size={20} className="text-slate-700" />}>
+              <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-[280px_1fr]">
+                <div>
+                  <div className="mb-2 text-sm font-semibold text-slate-600">人員篩選</div>
+                  <select
+                    value={selectedFlightMember}
+                    onChange={(e) => setSelectedFlightMember(e.target.value)}
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  >
+                    {allMembers.map((member) => (
+                      <option key={member} value={member}>
+                        {member}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {filteredInternationalFlightData.length > 0 ? (
+                  filteredInternationalFlightData.map((person, idx) => (
+                    <div key={`${person.name}-${idx}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                      <div className="text-lg font-bold text-slate-800">{person.name}</div>
+                      <div className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-700">
+                        {person.fly || '未提供班機資訊'}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <EmptyCard title="目前無符合條件的國際航空資料" />
+                )}
+              </div>
+            </SectionCard>
+          </section>
+        )}
+
+        {!loading && !loadError && activeMainTab === 'meal' && (
+          <section className="space-y-4">
+            <SectionCard title="餐會" icon={<UtensilsCrossed size={20} className="text-amber-700" />}>
+              {renderDateFilter()}
+            </SectionCard>
+            {mealData.length > 0 ? (
+              mealData.map((item, index) => (
+                <InfoCard key={`${item.date}-${item.time}-${item.activity}-${index}`} item={item} />
+              ))
+            ) : (
+              <EmptyCard title="目前查無符合條件的餐會資料" />
+            )}
+          </section>
+        )}
+
+        {!loading && !loadError && activeMainTab === 'visit' && (
+          <section className="space-y-4">
+            <SectionCard title="參訪" icon={<BookOpen size={20} className="text-violet-700" />}>
+              {renderDateFilter()}
+            </SectionCard>
+            {visitData.length > 0 ? (
+              visitData.map((item, index) => (
+                <InfoCard key={`${item.date}-${item.time}-${item.activity}-${index}`} item={item} />
+              ))
+            ) : (
+              <EmptyCard title="目前查無符合條件的參訪資料" />
+            )}
+          </section>
+        )}
+
+        {!loading && !loadError && activeMainTab === 'stay' && (
+          <section className="space-y-4">
+            <SectionCard title="住宿" icon={<MapPin size={20} className="text-emerald-700" />}>
+              {renderDateFilter()}
+            </SectionCard>
+            {stayData.length > 0 ? (
+              stayData.map((item, index) => (
+                <InfoCard key={`${item.date}-${item.time}-${item.activity}-${index}`} item={item} />
+              ))
+            ) : (
+              <EmptyCard title="目前查無符合條件的住宿資料" />
+            )}
+          </section>
+        )}
+
+        {!loading && !loadError && activeMainTab === 'meetingRelated' && (
+          <section className="space-y-4">
+            <SectionCard title="會議相關" icon={<FileText size={20} className="text-blue-700" />}>
+              {renderDateFilter()}
+            </SectionCard>
+            {meetingRelatedData.length > 0 ? (
+              meetingRelatedData.map((item, index) => (
+                <InfoCard key={`${item.date}-${item.time}-${item.activity}-${index}`} item={item} />
+              ))
+            ) : (
+              <EmptyCard title="目前查無符合條件的會議相關資料" />
+            )}
+          </section>
+        )}
+
+        {!loading && !loadError && activeMainTab === 'conference' && (
+          <section className="space-y-4">
+            <SectionCard title="Conference資訊" icon={<Cpu size={20} className="text-sky-700" />}>
+              {renderDateFilter()}
+            </SectionCard>
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <SectionCard title="HIMSS 官方資訊" icon={<BookOpen size={20} className="text-sky-700" />}>
+                <p className="text-sm leading-6 text-slate-600">
+                  2026 HIMSS conference 官方資訊與議程參考。
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <a
+                    href={himssConferenceReferenceLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-xl bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
+                  >
+                    <ExternalLink size={16} />
+                    開啟 HIMSS 官方資訊
+                  </a>
+                  {himssHandbookLink ? (
+                    <a
+                      href={himssHandbookLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800"
+                    >
+                      <FileText size={16} />
+                      開啟 HIMSS 手冊
+                    </a>
+                  ) : (
+                    <div className="text-sm text-rose-600">HIMSS 手冊連結尚未提供完整網址</div>
+                  )}
+                </div>
+              </SectionCard>
+
+              <SectionCard title="GTC 2026 官方網站" icon={<Cpu size={20} className="text-green-700" />}>
+                <p className="text-sm leading-6 text-slate-600">
+                  NVIDIA GTC 官方網站，供查看主題、最新議程、Keynote 與官方公告。
+                </p>
+                <div className="mt-4">
+                  <a
+                    href={GTC_CONFERENCE_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-xl bg-green-700 px-4 py-2 text-sm font-medium text-white hover:bg-green-800"
+                  >
+                    <ExternalLink size={16} />
+                    開啟 GTC 官方網站
+                  </a>
+                </div>
+              </SectionCard>
+            </div>
+
+            {conferenceData.length > 0 ? (
+              conferenceData.map((item, index) => (
+                <InfoCard key={`${item.date}-${item.time}-${item.activity}-${index}`} item={item} />
+              ))
+            ) : (
+              <EmptyCard title="目前查無符合條件的會議資料" />
+            )}
+          </section>
+        )}
+
+        {!loading && !loadError && activeMainTab === 'taskPrep' && (
+          <section className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <SectionCard title="工作分派" icon={<ClipboardList size={20} className="text-emerald-700" />}>
+                <div className="space-y-3">
+                  {workAssignments.length > 0 ? (
+                    workAssignments.map((person, idx) => (
+                      <div key={`${person.name}-${idx}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                        <div className="font-bold text-slate-800">
+                          {person.name}
+                          {person.task ? `　${person.task}` : ''}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <EmptyCard title="目前無工作分派資料" />
+                  )}
+                </div>
+              </SectionCard>
+
+              <SectionCard title="禮品準備與行前準備" icon={<Gift size={20} className="text-amber-700" />}>
+                <div className="space-y-3">
+                  {prepData.length > 0 ? (
+                    prepData.map((row, idx) => (
+                      <div key={idx} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                        {Object.entries(row)
+                          .filter(([, value]) => cleanText(value))
+                          .map(([key, value]) => (
+                            <div key={key} className="mb-1 text-sm text-slate-700">
+                              <span className="font-semibold text-slate-800">{key}：</span>
+                              {value}
+                            </div>
+                          ))}
+                      </div>
+                    ))
+                  ) : (
+                    <EmptyCard title="目前無準備資訊資料" />
+                  )}
+                </div>
+              </SectionCard>
+            </div>
+          </section>
+        )}
+
+        {!loading && !loadError && activeMainTab === 'notice' && (
+          <section className="grid grid-cols-1 gap-4">
+            <SectionCard title="重要資訊與注意事項" icon={<AlertCircle size={20} className="text-amber-700" />}>
+              <div className="mb-5 flex flex-wrap gap-2">
+                <button
+                  onClick={() => setNoticeTab('files')}
+                  className={`rounded-2xl px-4 py-2 text-sm font-medium ${
+                    noticeTab === 'files'
+                      ? 'bg-emerald-700 text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  出訪團相關資訊文件
+                </button>
+                <button
+                  onClick={() => setNoticeTab('diet')}
+                  className={`rounded-2xl px-4 py-2 text-sm font-medium ${
+                    noticeTab === 'diet'
+                      ? 'bg-emerald-700 text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  飲食資訊
+                </button>
+                <button
+                  onClick={() => setNoticeTab('travel')}
+                  className={`rounded-2xl px-4 py-2 text-sm font-medium ${
+                    noticeTab === 'travel'
+                      ? 'bg-emerald-700 text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  行程注意事項
+                </button>
+              </div>
+
+              {noticeTab === 'files' && (
+                <div className="space-y-4">
+                  {tripPlanLink && (
+                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                      <div className="text-base font-bold text-slate-800">2026 HIMSS&GTC 出訪團規劃</div>
+                      <div className="mt-2 text-sm leading-6 text-slate-600">
+                        包含責任義務、返國附件、繳交與出訪相關規範。
+                      </div>
+                      <div className="mt-3">
+                        <a
+                          href={tripPlanLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-800"
+                        >
+                          <FileText size={16} />
+                          開啟文件
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
+                    <div className="text-base font-bold text-slate-800">HIMSS 03/09–03/12</div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {['3/9', '3/10', '3/11', '3/12'].map((day) =>
+                        himssDailyLinks[day] ? (
+                          <a
+                            key={day}
+                            href={himssDailyLinks[day]}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-2 rounded-xl bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
+                          >
+                            <BookOpen size={16} />
+                            {day}
+                          </a>
+                        ) : (
+                          <span
+                            key={day}
+                            className="inline-flex items-center gap-2 rounded-xl bg-slate-200 px-4 py-2 text-sm font-medium text-slate-500"
+                          >
+                            {day}
+                          </span>
+                        )
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3">
+                    {referenceData
+                      .filter((item) => {
+                        const title = cleanText(item.item);
+                        return !/0309|03\/09|3\/9|0310|03\/10|3\/10|0311|03\/11|3\/11|0312|03\/12|3\/12/i.test(title);
+                      })
+                      .map((item, index) => {
+                        const safeLink = normalizeLink(item.link);
+                        return (
+                          <div key={`${item.item}-${index}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                            <div className="text-sm font-bold text-slate-800">{item.item || '未命名項目'}</div>
+                            {item.content && (
+                              <div className="mt-2 text-sm leading-6 text-slate-600">{item.content}</div>
+                            )}
+                            {safeLink ? (
+                              <div className="mt-3">
+                                <a
+                                  href={safeLink}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800"
+                                >
+                                  <ExternalLink size={16} />
+                                  開啟連結
+                                </a>
+                              </div>
+                            ) : (
+                              <div className="mt-2 text-sm text-rose-600">此筆連結不是完整網址</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              {noticeTab === 'diet' && (
+                <div className="grid gap-3">
+                  {dietInfoData.length > 0 ? (
+                    dietInfoData.map((item, index) => (
+                      <div key={`${item.name}-${index}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                        <div className="text-base font-bold text-slate-800">{item.name}</div>
+                        <div className="mt-2 text-sm text-slate-700">
+                          <span className="font-semibold">飲食類別：</span>
+                          {item.diet || '未提供'}
+                        </div>
+                        <div className="mt-1 text-sm text-slate-700">
+                          <span className="font-semibold">禁忌：</span>
+                          {item.foodsAvoid || '無'}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <EmptyCard title="目前無飲食資訊資料" />
+                  )}
+                </div>
+              )}
+
+              {noticeTab === 'travel' && (
+                <div className="space-y-4">
+                  {himssHandbookLink && (
+                    <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
+                      <div className="text-base font-bold text-slate-800">HIMSS行程資料、飛資得</div>
+                      <div className="mt-2 text-sm leading-6 text-slate-600">
+                        建議先查看完整文件，確認氣候、電源、旅行社聯繫窗口、交通集合與其他旅遊注意事項。
+                      </div>
+                      <div className="mt-3">
+                        <a
+                          href={himssHandbookLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800"
+                        >
+                          <FileText size={16} />
+                          開啟 HIMSS行程資料、飛資得
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
+                  {travelNoticeItems.length > 0 ? (
+                    travelNoticeItems.map((item, index) => (
+                      <div key={`${item.item}-${index}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                        <div className="text-sm font-bold text-slate-800">{item.item}</div>
+                        {item.content && (
+                          <div className="mt-2 text-sm leading-6 text-slate-600">{item.content}</div>
+                        )}
+                        {normalizeLink(item.link) && (
+                          <div className="mt-3">
+                            <a
+                              href={normalizeLink(item.link)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800"
+                            >
+                              <ExternalLink size={16} />
+                              開啟連結
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-5 text-sm leading-7 text-slate-600">
+                      目前 `web-參考資料連結` 尚未提供可摘要的內容欄位。
+                    </div>
+                  )}
+                </div>
+              )}
+            </SectionCard>
+          </section>
+        )}
+
+        {!loading && !loadError && activeMainTab === 'ai' && (
+          <section className="grid grid-cols-1 gap-4">
+            <SectionCard title="AI 助手" icon={<Bot size={22} className="text-emerald-700" />}>
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-[340px_1fr] items-start">
+                <div className="rounded-3xl border border-slate-200 bg-gradient-to-b from-emerald-50 to-cyan-50 p-6 text-center shadow-sm">
+                  <div className="space-y-4 text-center">
+                    <div className="text-xs font-semibold tracking-[0.18em] text-emerald-600">
+                      AI CUSTOMER ASSISTANT
+                    </div>
+
+                    <img
+                      src="/xiuchuan-ai-secretary.png"
+                      alt="秀傳AI小秘書"
+                      className="mx-auto w-64 md:w-80 lg:w-96 drop-shadow-lg"
+                    />
+
+                    <div className="text-2xl font-bold text-emerald-700">
+                      秀傳 AI 小秘書
+                    </div>
+
+                    <p className="text-sm leading-6 text-slate-600">
+                      我是秀傳醫療體系 AI 參訪助手，
+                      <br />
+                      可以協助查詢行程、班機、餐會、參訪、住宿，
+                      <br />
+                      以及 HIMSS、GTC 相關資訊。
+                    </p>
+
+                    <div className="flex items-center justify-center gap-2 text-sm text-emerald-700">
+                      <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                      AI 即時服務中
+                    </div>
+
+                    <div className="pt-2">
+                      <div className="mb-3 text-sm font-semibold text-slate-700">
+                        快速提問
+                      </div>
+
+                      <div className="flex flex-wrap justify-center gap-2">
+                        {quickQuestions.map((q) => (
+                          <button
+                            key={q}
+                            onClick={() => handleSendMessage(null, q)}
+                            className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
+                          >
+                            <Sparkles size={15} />
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex h-[520px] flex-col rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3 border-b border-slate-100 pb-3">
+                    <p className="text-sm leading-7 text-slate-600 md:text-base">
+                      可直接查詢行程、國際航空、參訪、餐會、GTC 官方網站、HIMSS 官方資訊、重要文件，
+                      並支援簡單自然語言查詢。
+                    </p>
+                  </div>
+
+                  <div className="flex-1 space-y-3 overflow-y-auto pr-1">
+                    {messages.map((message, idx) => (
+                      <div
+                        key={`${message.role}-${idx}`}
+                        className={`flex ${
+                          message.role === 'user' ? 'justify-end' : 'justify-start'
+                        }`}
+                      >
+                        <div
+                          className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap ${
+                            message.role === 'user'
+                              ? 'bg-emerald-700 text-white'
+                              : 'border border-slate-200 bg-slate-50 text-slate-700'
+                          }`}
+                        >
+                          {message.role === 'assistant' && (
+                            <div className="mb-2 flex items-center gap-2 text-xs font-bold text-emerald-700">
+                              <img
+                                src="/xiuchuan-ai-secretary.png"
+                                alt="AI"
+                                className="h-6 w-6 rounded-full object-cover"
+                              />
+                              AI 回覆
+                            </div>
+                          )}
+                          {message.text}
+                        </div>
+                      </div>
+                    ))}
+
+                    {thinking && (
+                      <div className="flex justify-start">
+                        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+                          <div className="flex items-center gap-2">
+                            <div className="animate-pulse">🤖</div>
+                            <div>AI 思考中...</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div ref={chatEndRef} />
+                  </div>
+
+                  <form onSubmit={handleSendMessage} className="mt-4 flex gap-2">
+                    <input
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder="例如：3/15那些人搭機返台"
+                      className="flex-1 rounded-2xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                    <button
+                      type="submit"
+                      disabled={thinking}
+                      className="inline-flex items-center justify-center rounded-2xl bg-emerald-700 px-4 py-3 text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-emerald-400"
+                    >
+                      <Send size={18} />
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </SectionCard>
+          </section>
+        )}
+      </main>
+    </div>
+  );
+}
