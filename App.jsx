@@ -7,7 +7,6 @@ import {
   Clock,
   Users,
   Car,
-  MessageCircle,
   Send,
   Bot,
   Sparkles,
@@ -21,9 +20,13 @@ import {
   Gift,
   Plane,
   ChevronRight,
+  ShieldCheck,
+  Building2,
+  Globe,
+  MessageCircle,
 } from 'lucide-react';
 
-// ===== 1. Google Sheet CSV 匯出網址 =====
+// ===== Google Sheet CSV 匯出網址 =====
 const TRIP_CSV_URL =
   'https://docs.google.com/spreadsheets/d/1-hXGxiOVY8fnVYKX-45Uty5cKYUhSQvo9gnsuW1D47Q/export?format=csv&gid=1007063747';
 const PEOPLE_CSV_URL =
@@ -39,11 +42,11 @@ const DATE_CSV_URL =
 const ART_CSV_URL =
   'https://docs.google.com/spreadsheets/d/1-hXGxiOVY8fnVYKX-45Uty5cKYUhSQvo9gnsuW1D47Q/export?format=csv&gid=84464990';
 
-// ===== 2. 官方網站 =====
+// ===== 官方網站 =====
 const HIMSS_CONFERENCE_URL = 'https://www.himssconference.com/';
 const GTC_CONFERENCE_URL = 'https://www.nvidia.com/zh-tw/gtc/';
 
-// ===== 3. UI 分頁 =====
+// ===== 主分頁 =====
 const mainTabs = [
   { key: 'daily', label: '每日行程' },
   { key: 'flight', label: '國際航空' },
@@ -57,9 +60,17 @@ const mainTabs = [
   { key: 'ai', label: 'AI 助手' },
 ];
 
-// ===== 4. 工具函式 =====
+// ===== 工具函式 =====
 function cleanText(value) {
   return String(value ?? '').replace(/^\ufeff/, '').trim();
+}
+
+function safeDecode(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function parseCSV(csvText) {
@@ -129,13 +140,30 @@ function getValue(obj, keys) {
 function normalizeDate(rawDate) {
   const cleaned = cleanText(rawDate);
   if (!cleaned) return '';
-  const normalized = cleaned.replace(/-/g, '/');
+  const normalized = cleaned.replace(/[.-]/g, '/');
   const match = normalized.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
   if (!match) return cleaned;
   const year = match[1];
   const month = match[2].padStart(2, '0');
   const day = match[3].padStart(2, '0');
   return `${year}/${month}/${day}`;
+}
+
+function normalizeQuestionTypos(text) {
+  let q = cleanText(text);
+  const rules = [
+    [/晚歺|晩餐|晩歺/g, '晚餐'],
+    [/午歺/g, '午餐'],
+    [/班雞|班基|搬機/g, '班機'],
+    [/哪理|那理|那裡/g, '哪裡'],
+    [/聖何西|圣荷西|聖荷矽/g, '聖荷西'],
+    [/回台灣|回台/g, '返台'],
+    [/-/g, '/'],
+  ];
+  rules.forEach(([regex, replacement]) => {
+    q = q.replace(regex, replacement);
+  });
+  return q;
 }
 
 function splitMembers(membersText) {
@@ -146,45 +174,138 @@ function splitMembers(membersText) {
     .filter(Boolean);
 }
 
+function includesMember(membersText, selectedMember) {
+  if (!selectedMember || selectedMember === '全部') return true;
+  return splitMembers(membersText).some(
+    (name) => name === selectedMember || name.includes(selectedMember) || selectedMember.includes(name)
+  );
+}
+
 function sortByDateTime(a, b) {
   const aKey = `${a.date || ''} ${a.time || ''}`;
   const bKey = `${b.date || ''} ${b.time || ''}`;
   return aKey.localeCompare(bKey, 'zh-Hant');
 }
 
-function includesMember(membersText, selectedMember) {
-  if (!selectedMember || selectedMember === '全部') return true;
-  return splitMembers(membersText).some(
-    (name) => name === selectedMember || name.includes(selectedMember)
-  );
+function extractFirstUrl(value) {
+  const raw = cleanText(value);
+  if (!raw) return '';
+  const match = raw.match(/https?:\/\/[^\s]+|www\.[^\s]+/i);
+  return match ? match[0] : '';
 }
 
 function normalizeLink(value) {
   const raw = cleanText(value);
   if (!raw) return '';
-  if (/^https?:\/\//i.test(raw)) return raw;
-  if (/^www\./i.test(raw)) return `https://${raw}`;
+  const extracted = extractFirstUrl(raw) || raw;
+  if (/^https?:\/\//i.test(extracted)) return extracted.trim();
+  if (/^www\./i.test(extracted)) return `https://${extracted.trim()}`;
   return '';
 }
 
 function looksLikeGoogleMap(url) {
   const link = normalizeLink(url);
-  return /google\.com\/maps|maps\.app\.goo\.gl|goo\.gl\/maps/i.test(link);
+  return /google\.com\/maps|maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google/i.test(link);
+}
+
+function buildGoogleMapSearchUrl(keyword) {
+  const text = cleanText(keyword);
+  if (!text) return '';
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(text)}`;
+}
+
+function extractReadablePlaceFromMapUrl(url) {
+  const href = normalizeLink(url);
+  if (!href) return '';
+
+  try {
+    const parsed = new URL(href);
+
+    const q =
+      parsed.searchParams.get('q') ||
+      parsed.searchParams.get('query') ||
+      parsed.searchParams.get('destination') ||
+      parsed.searchParams.get('daddr') ||
+      parsed.searchParams.get('saddr');
+
+    if (q) return safeDecode(q).replace(/\+/g, ' ').trim();
+
+    const placeMatch = parsed.pathname.match(/\/place\/([^/]+)/i);
+    if (placeMatch?.[1]) {
+      return safeDecode(placeMatch[1]).replace(/\+/g, ' ').trim();
+    }
+
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+function buildDisplayLocation(rawLocation, mapHref) {
+  const locationText = cleanText(rawLocation);
+
+  if (locationText && !looksLikeGoogleMap(locationText)) {
+    return locationText;
+  }
+
+  const parsedFromMap = extractReadablePlaceFromMapUrl(mapHref);
+  if (parsedFromMap) return parsedFromMap;
+
+  if (mapHref) return '地址文字未填，已提供地圖連結';
+
+  return '';
 }
 
 function buildEmbedMapUrl(item) {
-  const mapLink = normalizeLink(item.localMap);
-  const locationText = cleanText(item.location);
+  const mapHref = normalizeLink(item.localMapHref || item.localMap);
+  const locationText = cleanText(item.locationDisplay || item.location);
 
-  if (locationText) {
+  if (locationText && locationText !== '地址文字未填，已提供地圖連結') {
     return `https://www.google.com/maps?q=${encodeURIComponent(locationText)}&output=embed`;
   }
 
-  if (mapLink) {
-    return `https://www.google.com/maps?q=${encodeURIComponent(mapLink)}&output=embed`;
+  if (mapHref) {
+    return `https://www.google.com/maps?q=${encodeURIComponent(mapHref)}&output=embed`;
   }
 
   return '';
+}
+
+function extractDateTokenFromQuestion(question) {
+  const q = normalizeQuestionTypos(question);
+
+  let match = q.match(/(20\d{2})\/(\d{1,2})\/(\d{1,2})/);
+  if (match) {
+    return `${match[1]}/${match[2].padStart(2, '0')}/${match[3].padStart(2, '0')}`;
+  }
+
+  match = q.match(/(^|[^0-9])(\d{1,2})\/(\d{1,2})(?!\d)/);
+  if (match) {
+    return `2026/${match[2].padStart(2, '0')}/${match[3].padStart(2, '0')}`;
+  }
+
+  return '';
+}
+
+function findBestMemberInQuestion(question, members) {
+  const q = normalizeQuestionTypos(question);
+  const exact = members.find((name) => q.includes(name));
+  if (exact) return exact;
+
+  let bestName = '';
+  let bestScore = 0;
+
+  members.forEach((name) => {
+    const chars = [...name];
+    const hitCount = chars.filter((ch) => q.includes(ch)).length;
+    const score = chars.length ? hitCount / chars.length : 0;
+    if (score > bestScore) {
+      bestScore = score;
+      bestName = name;
+    }
+  });
+
+  return bestScore >= 0.66 ? bestName : '';
 }
 
 function buildHimssDailyLinks(referenceData) {
@@ -197,7 +318,7 @@ function buildHimssDailyLinks(referenceData) {
 
   referenceData.forEach((item) => {
     const title = cleanText(item.item);
-    const safeLink = normalizeLink(item.link);
+    const safeLink = normalizeLink(item.linkHref || item.link);
     if (!safeLink) return;
 
     if (/0309|03\/09|3\/9/i.test(title)) map['3/9'] = safeLink;
@@ -214,19 +335,19 @@ function getCardSurface(item) {
   const category = cleanText(item.category);
 
   if (type.includes('餐會') || type.includes('餐敘') || category.includes('餐')) {
-    return 'bg-amber-50/60 border-amber-100';
+    return 'bg-amber-50/80 border-amber-100';
   }
   if (type.includes('參訪') || category.includes('參訪')) {
-    return 'bg-violet-50/60 border-violet-100';
+    return 'bg-violet-50/80 border-violet-100';
   }
   if (type.includes('住宿') || category.includes('住宿')) {
-    return 'bg-emerald-50/60 border-emerald-100';
+    return 'bg-emerald-50/80 border-emerald-100';
   }
   if (type.includes('會議') || category.includes('會議')) {
-    return 'bg-sky-50/60 border-sky-100';
+    return 'bg-sky-50/80 border-sky-100';
   }
   if (category.includes('會議相關')) {
-    return 'bg-blue-50/60 border-blue-100';
+    return 'bg-blue-50/80 border-blue-100';
   }
   if (type.includes('班機') || category.includes('班機')) {
     return 'bg-slate-50 border-slate-200';
@@ -254,7 +375,7 @@ function getTypeBadge(item) {
     return { label: '會議相關', cls: 'bg-blue-50 text-blue-700 border-blue-200' };
   }
   if (type.includes('班機') || category.includes('班機')) {
-    return { label: '飛資訊', cls: 'bg-slate-100 text-slate-700 border-slate-200' };
+    return { label: '飛行資訊', cls: 'bg-slate-100 text-slate-700 border-slate-200' };
   }
   return {
     label: category || type || '行程',
@@ -286,7 +407,7 @@ function matchType(item, target) {
       t.includes('住宿') ||
       c.includes('住宿') ||
       activity.includes('住宿') ||
-      activity.includes('Harrah')
+      /hotel|inn|harrah/i.test(activity)
     );
   }
   if (target === '會議') {
@@ -298,54 +419,7 @@ function matchType(item, target) {
   return false;
 }
 
-function extractDateTokenFromQuestion(question) {
-  const q = cleanText(question).replace(/-/g, '/');
-  let match = q.match(/(20\d{2})\/(\d{1,2})\/(\d{1,2})/);
-  if (match) return normalizeDate(match[0]);
-
-  match = q.match(/(^|[^0-9])(\d{1,2})\/(\d{1,2})(?!\d)/);
-  if (match) return normalizeDate(`2026/${match[2]}/${match[3]}`);
-
-  return '';
-}
-
-function normalizeQuestionTypos(q) {
-  let text = cleanText(q);
-  const rules = [
-    [/晚歺|晩餐|晩歺/g, '晚餐'],
-    [/午歺/g, '午餐'],
-    [/班雞|班基|搬機/g, '班機'],
-    [/哪理|那理|那裡/g, '哪裡'],
-    [/聖何西|圣荷西|聖荷矽/g, '聖荷西'],
-    [/回台灣|回台/g, '返台'],
-  ];
-  rules.forEach(([regex, replacement]) => {
-    text = text.replace(regex, replacement);
-  });
-  return text;
-}
-
-function findBestMemberInQuestion(q, members) {
-  const exact = members.find((name) => q.includes(name));
-  if (exact) return exact;
-
-  let bestName = '';
-  let bestScore = 0;
-
-  members.forEach((name) => {
-    const chars = [...name];
-    const hitCount = chars.filter((ch) => q.includes(ch)).length;
-    const score = chars.length ? hitCount / chars.length : 0;
-    if (score > bestScore) {
-      bestScore = score;
-      bestName = name;
-    }
-  });
-
-  return bestScore >= 0.66 ? bestName : '';
-}
-
-// ===== 5. 資料映射 =====
+// ===== 資料映射 =====
 function mapTripRows(rawObjects) {
   return rawObjects
     .map((row) => {
@@ -354,9 +428,23 @@ function mapTripRows(rawObjects) {
       const linkUrl = getValue(row, ['linkUrl']);
       const localMap = getValue(row, ['localmap', 'localMap', 'mapLink']);
 
-      const locationIsMap = looksLikeGoogleMap(rawLocation);
-      const officialIsMap = looksLikeGoogleMap(officialLink);
-      const linkIsMap = looksLikeGoogleMap(linkUrl);
+      const locationHref = normalizeLink(rawLocation);
+      const officialHref = normalizeLink(officialLink);
+      const linkHref = normalizeLink(linkUrl);
+      const localMapHref = normalizeLink(localMap);
+
+      const locationIsMap = locationHref && looksLikeGoogleMap(rawLocation);
+      const officialIsMap = officialHref && looksLikeGoogleMap(officialLink);
+      const linkIsMap = linkHref && looksLikeGoogleMap(linkUrl);
+
+      const finalMapHref =
+        localMapHref ||
+        (locationIsMap ? locationHref : '') ||
+        (officialIsMap ? officialHref : '') ||
+        (linkIsMap ? linkHref : '') ||
+        (!locationIsMap && rawLocation ? buildGoogleMapSearchUrl(rawLocation) : '');
+
+      const locationDisplay = buildDisplayLocation(rawLocation, finalMapHref);
 
       return {
         category: getValue(row, ['category']),
@@ -365,18 +453,24 @@ function mapTripRows(rawObjects) {
         time: getValue(row, ['time']),
         activity: getValue(row, ['activity']),
         location: locationIsMap ? '' : rawLocation,
+        locationDisplay,
         members: getValue(row, ['members']),
         contact: getValue(row, ['contact']),
         transitTime: getValue(row, ['transitTime']),
         note: getValue(row, ['note']),
         attachmentUrl: getValue(row, ['attachmentUrl']),
-        localMap:
-          localMap ||
-          (locationIsMap ? rawLocation : '') ||
-          (officialIsMap ? officialLink : '') ||
-          (linkIsMap ? linkUrl : ''),
-        linkUrl: linkIsMap ? '' : linkUrl,
-        officialLink: officialIsMap ? '' : officialLink,
+        localMap,
+        localMapHref: finalMapHref,
+        linkUrl,
+        linkUrlHref: !linkIsMap ? linkHref : '',
+        officialLink,
+        officialLinkHref: !officialIsMap ? officialHref : '',
+        dataIssueLink:
+          (!cleanText(officialLink) || normalizeLink(officialLink)) &&
+          (!cleanText(linkUrl) || normalizeLink(linkUrl)) &&
+          (!cleanText(getValue(row, ['attachmentUrl'])) || normalizeLink(getValue(row, ['attachmentUrl'])))
+            ? ''
+            : '資料問題：此筆連結不是有效網址',
       };
     })
     .filter(
@@ -386,6 +480,7 @@ function mapTripRows(rawObjects) {
         item.date ||
         item.activity ||
         item.location ||
+        item.locationDisplay ||
         item.members
     );
 }
@@ -431,11 +526,18 @@ function mapDateRows(rawObjects) {
 
 function mapReferenceRows(rawObjects) {
   return rawObjects
-    .map((row) => ({
-      item: getValue(row, ['項目', 'item']),
-      link: getValue(row, ['連結', 'link']),
-      content: getValue(row, ['內容', 'content', '摘要', 'note']),
-    }))
+    .map((row) => {
+      const item = getValue(row, ['項目', 'item']);
+      const link = getValue(row, ['連結', 'link']);
+      const content = getValue(row, ['內容', 'content', '摘要', 'note']);
+      return {
+        item,
+        link,
+        linkHref: normalizeLink(link),
+        content,
+        dataIssueLink: cleanText(link) && !normalizeLink(link) ? '資料問題：此筆連結不是有效網址' : '',
+      };
+    })
     .filter((item) => item.item || item.link || item.content);
 }
 
@@ -451,9 +553,110 @@ function mapArtRows(rawObjects) {
     .filter((item) => item.section || item.imageUrl || item.title);
 }
 
-// ===== 6. 畫面元件 =====
+// ===== 畫面元件 =====
+function StatCard({ title, value, hint, icon, tone = 'emerald' }) {
+  const toneMap = {
+    emerald: 'border-emerald-100 bg-emerald-50 text-emerald-700',
+    sky: 'border-sky-100 bg-sky-50 text-sky-700',
+    violet: 'border-violet-100 bg-violet-50 text-violet-700',
+    amber: 'border-amber-100 bg-amber-50 text-amber-700',
+  };
+
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold tracking-[0.14em] text-slate-500">{title}</div>
+          <div className="mt-2 text-2xl font-extrabold text-slate-900">{value}</div>
+          {hint ? <div className="mt-1 text-sm text-slate-500">{hint}</div> : null}
+        </div>
+        <div className={`rounded-2xl border p-3 ${toneMap[tone] || toneMap.emerald}`}>{icon}</div>
+      </div>
+    </div>
+  );
+}
+
+function DetailRow({ icon, label, value }) {
+  if (!value) return null;
+
+  return (
+    <div className="rounded-2xl border border-white/70 bg-white/80 p-3">
+      <div className="flex items-start gap-2">
+        <div className="mt-0.5 text-slate-500">{icon}</div>
+        <div className="min-w-0">
+          <div className="text-xs font-bold text-slate-500">{label}</div>
+          <div className="break-words whitespace-pre-wrap text-sm leading-6 text-slate-700">{value}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ResourceButtons({ item }) {
+  const attachmentHref = normalizeLink(item.attachmentUrl);
+  const mapHref = normalizeLink(item.localMapHref || item.localMap);
+
+  let webHref =
+    normalizeLink(item.officialLinkHref || item.officialLink) ||
+    normalizeLink(item.linkUrlHref || item.linkUrl) ||
+    '';
+
+  if (looksLikeGoogleMap(webHref)) {
+    webHref = '';
+  }
+
+  if (!attachmentHref && !mapHref && !webHref && !item.dataIssueLink) return null;
+
+  return (
+    <div className="mt-4 flex flex-wrap gap-2">
+      {mapHref && (
+        <a
+          href={mapHref}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-800"
+        >
+          <MapPin size={16} />
+          地圖
+        </a>
+      )}
+
+      {webHref && (
+        <a
+          href={webHref}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-800"
+        >
+          <ExternalLink size={16} />
+          網頁
+        </a>
+      )}
+
+      {attachmentHref && (
+        <a
+          href={attachmentHref}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800"
+        >
+          <Paperclip size={16} />
+          附件
+        </a>
+      )}
+
+      {item.dataIssueLink && (
+        <div className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
+          <AlertCircle size={16} />
+          {item.dataIssueLink}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MapPreview({ item }) {
-  const mapHref = normalizeLink(item.localMap);
+  const mapHref = normalizeLink(item.localMapHref || item.localMap);
   const embedUrl = buildEmbedMapUrl(item);
 
   if (!mapHref || !embedUrl) return null;
@@ -476,79 +679,12 @@ function MapPreview({ item }) {
         </a>
       </div>
       <iframe
-        title={`map-${item.activity || item.location}`}
+        title={`map-${item.activity || item.locationDisplay || item.location}`}
         src={embedUrl}
         className="h-64 w-full"
         loading="lazy"
         referrerPolicy="no-referrer-when-downgrade"
       />
-    </div>
-  );
-}
-
-function ResourceButtons({ item }) {
-  const attachmentHref = normalizeLink(item.attachmentUrl);
-  const mapHref = normalizeLink(item.localMap);
-  const webHref = normalizeLink(item.officialLink || item.linkUrl);
-
-  if (!attachmentHref && !mapHref && !webHref) return null;
-
-  return (
-    <div className="mt-4 flex flex-wrap gap-2">
-      {mapHref && (
-        <a
-          href={mapHref}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-800"
-          title="地圖"
-        >
-          <MapPin size={16} />
-          地圖
-        </a>
-      )}
-
-      {webHref && (
-        <a
-          href={webHref}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-800"
-          title="網頁"
-        >
-          <ExternalLink size={16} />
-          網頁
-        </a>
-      )}
-
-      {attachmentHref && (
-        <a
-          href={attachmentHref}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800"
-          title="附件"
-        >
-          <Paperclip size={16} />
-          附件
-        </a>
-      )}
-    </div>
-  );
-}
-
-function DetailRow({ icon, label, value }) {
-  if (!value) return null;
-
-  return (
-    <div className="rounded-2xl border border-white/70 bg-white/70 p-3">
-      <div className="flex items-start gap-2">
-        <div className="mt-0.5 text-slate-500">{icon}</div>
-        <div className="min-w-0">
-          <div className="text-xs font-bold text-slate-500">{label}</div>
-          <div className="break-words whitespace-pre-wrap text-sm text-slate-700">{value}</div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -576,14 +712,14 @@ function InfoCard({ item }) {
         )}
       </div>
 
-      <div className="mb-4 text-lg font-bold text-slate-800">
+      <div className="mb-4 text-lg font-bold leading-7 text-slate-800">
         {item.activity || '未命名活動'}
       </div>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <DetailRow icon={<CalendarDays size={16} />} label="日期" value={item.date} />
         <DetailRow icon={<Clock size={16} />} label="時間" value={item.time} />
-        <DetailRow icon={<MapPin size={16} />} label="地點" value={item.location} />
+        <DetailRow icon={<MapPin size={16} />} label="地點" value={item.locationDisplay || item.location} />
         <DetailRow icon={<Users size={16} />} label="成員" value={item.members} />
         <DetailRow icon={<User size={16} />} label="活動窗口" value={item.contact} />
         <DetailRow icon={<Car size={16} />} label="交通時間" value={item.transitTime} />
@@ -604,19 +740,93 @@ function EmptyCard({ title = '目前尚無資料' }) {
   );
 }
 
-function SectionCard({ title, icon, children }) {
+function SectionCard({ title, icon, children, subtitle }) {
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
-      <div className="mb-4 flex items-center gap-2">
-        {icon}
-        <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+      <div className="mb-4">
+        <div className="flex items-center gap-2">
+          {icon}
+          <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+        </div>
+        {subtitle ? <p className="mt-2 text-sm leading-6 text-slate-600">{subtitle}</p> : null}
       </div>
       {children}
     </div>
   );
 }
 
-// ===== 7. 主程式 =====
+function SimpleKeyValueCard({ data }) {
+  const entries = Object.entries(data).filter(([, value]) => cleanText(value));
+  if (!entries.length) return null;
+
+  return (
+    <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+      {entries.map(([key, value]) => (
+        <div key={key} className="mb-1 text-sm leading-7 text-slate-700">
+          <span className="font-semibold text-slate-800">{key}：</span>
+          {value}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AIAnswerContent({ text }) {
+  const lines = String(text || '').split('\n');
+
+  return (
+    <div className="space-y-2">
+      {lines.map((line, idx) => {
+        const content = cleanText(line);
+
+        if (!content) return <div key={idx} className="h-1" />;
+
+        if (/^【.*】$/.test(content)) {
+          return (
+            <div key={idx} className="pt-1 text-sm font-bold text-emerald-700">
+              {content}
+            </div>
+          );
+        }
+
+        if (/^[-•]/.test(content)) {
+          return (
+            <div key={idx} className="pl-1 text-sm leading-7 text-slate-700">
+              {content}
+            </div>
+          );
+        }
+
+        if (/^連結：https?:\/\//.test(content) || /^地圖：https?:\/\//.test(content)) {
+          const parts = content.split('：');
+          const label = parts[0];
+          const href = content.replace(`${label}：`, '').trim();
+          return (
+            <div key={idx} className="text-sm leading-7">
+              <span className="font-semibold text-slate-800">{label}：</span>
+              <a
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className="break-all text-emerald-700 underline underline-offset-2"
+              >
+                {href}
+              </a>
+            </div>
+          );
+        }
+
+        return (
+          <div key={idx} className="text-sm leading-7 text-slate-700">
+            {content}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ===== 主程式 =====
 export default function App() {
   const [tripData, setTripData] = useState([]);
   const [peopleData, setPeopleData] = useState([]);
@@ -624,7 +834,7 @@ export default function App() {
   const [prepData, setPrepData] = useState([]);
   const [referenceData, setReferenceData] = useState([]);
   const [dateData, setDateData] = useState([]);
-  const [artData, setArtData] = useState([]);
+  const [, setArtData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
@@ -638,7 +848,8 @@ export default function App() {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      text: '您好，我是秀傳 AI 小秘書。請問有甚麼需要我協助？例如：3/15行程、3/15誰回台灣、黃靖媛3/8晚餐在哪裡吃。',
+      text:
+        '您好，我是秀傳AI小秘書。\n\n可直接查詢：\n- 3/15行程\n- 3/15誰回台灣\n- 黃靖媛3/8晚餐在哪裡吃\n- 郭昭宏何時抵達聖荷西',
     },
   ]);
   const [input, setInput] = useState('');
@@ -713,8 +924,9 @@ export default function App() {
   const allMembers = useMemo(() => {
     const fromPeople = peopleData.map((p) => p.name).filter(Boolean);
     const fromTrip = tripData.flatMap((item) => splitMembers(item.members));
-    return ['全部', ...Array.from(new Set([...fromPeople, ...fromTrip]))];
-  }, [peopleData, tripData]);
+    const fromTask = taskData.map((item) => item.name).filter(Boolean);
+    return ['全部', ...Array.from(new Set([...fromPeople, ...fromTrip, ...fromTask]))];
+  }, [peopleData, tripData, taskData]);
 
   const memberFilteredTrip = useMemo(() => {
     if (selectedMember === '全部') return tripData;
@@ -776,26 +988,28 @@ export default function App() {
   }, [peopleData]);
 
   const dietInfoData = useMemo(() => {
-    return taskData.filter((item) => cleanText(item.name) || cleanText(item.diet) || cleanText(item.foodsAvoid));
+    return taskData.filter(
+      (item) => cleanText(item.name) || cleanText(item.diet) || cleanText(item.foodsAvoid)
+    );
   }, [taskData]);
 
   const tripPlanLink = useMemo(() => {
-    const raw = referenceData.find((item) => item.item.includes('出訪團規劃'))?.link || '';
-    return normalizeLink(raw);
+    const raw = referenceData.find((item) => cleanText(item.item).includes('出訪團規劃'))?.linkHref || '';
+    return raw;
   }, [referenceData]);
 
   const himssHandbookLink = useMemo(() => {
     const raw =
       referenceData.find(
-        (item) => item.item.includes('HIMSS行程資料') || item.item.includes('手冊')
-      )?.link || '';
-    return normalizeLink(raw);
+        (item) => cleanText(item.item).includes('HIMSS行程資料') || cleanText(item.item).includes('手冊')
+      )?.linkHref || '';
+    return raw;
   }, [referenceData]);
 
   const himssConferenceReferenceLink = useMemo(() => {
     const raw =
-      referenceData.find((item) => item.item.includes('HIMSS conference'))?.link || '';
-    return normalizeLink(raw) || HIMSS_CONFERENCE_URL;
+      referenceData.find((item) => cleanText(item.item).includes('HIMSS conference'))?.linkHref || '';
+    return raw || HIMSS_CONFERENCE_URL;
   }, [referenceData]);
 
   const himssDailyLinks = useMemo(() => {
@@ -825,8 +1039,8 @@ export default function App() {
     '郭昭宏何時抵達聖荷西',
     '人員名單',
     '禮品準備',
-    'HIMSS 官方資訊',
-    'GTC 官方網站',
+    '出訪團規劃',
+    'HIMSS會場在哪裡',
   ];
 
   function fallbackAnswer(q) {
@@ -836,24 +1050,24 @@ export default function App() {
 
     if (query.includes('人員名單')) {
       const names = (peopleData || []).map((p) => p.name).filter(Boolean);
-      return names.length ? `人員名單如下：\n${names.join('、')}` : '目前無人員名單資料。';
+      return names.length ? `【人員名單】\n${names.join('、')}` : '目前無人員名單資料。';
     }
 
     if (query.includes('禮品') || query.includes('準備')) {
       return prepData && prepData.length
-        ? '已有禮品準備與行前準備資料，請至「任務與準備」查看。'
+        ? '【禮品準備】\n已有禮品準備與行前準備資料，請至「任務與準備」查看。'
         : '目前無禮品準備資料。';
     }
 
     if (query.includes('HIMSS')) {
       return himssConferenceReferenceLink
-        ? `HIMSS 官方資訊：\n${himssConferenceReferenceLink}`
+        ? `【HIMSS 官方資訊】\n連結：${himssConferenceReferenceLink}`
         : '目前無 HIMSS 官方資訊連結。';
     }
 
     if (query.includes('GTC')) {
       return GTC_CONFERENCE_URL
-        ? `GTC 官方網站：\n${GTC_CONFERENCE_URL}`
+        ? `【GTC 官方網站】\n連結：${GTC_CONFERENCE_URL}`
         : '目前無 GTC 官方網站連結。';
     }
 
@@ -863,17 +1077,19 @@ export default function App() {
       const items = tripData.filter((item) => item.date === foundDate).sort(sortByDateTime);
       if (!items.length) return `${foundDate} 目前沒有行程資料。`;
 
-      return `${foundDate} 行程如下：\n${items
+      return `【${foundDate} 行程】\n${items
         .map(
           (item) =>
-            `• ${item.time || '時間未填'} ${item.activity || '未命名行程'}${
-              item.location ? `｜${item.location}` : ''
+            `- ${item.time || '時間未填'}｜${item.activity || '未命名行程'}${
+              cleanText(item.locationDisplay || item.location)
+                ? `｜${cleanText(item.locationDisplay || item.location)}`
+                : ''
             }`
         )
         .join('\n')}`;
     }
 
-    if (foundDate && (query.includes('返台') || query.includes('回台灣'))) {
+    if (foundDate && query.includes('返台')) {
       const names = internationalFlightData
         .filter((item) => {
           const flyText = cleanText(item.fly);
@@ -891,7 +1107,7 @@ export default function App() {
         .filter(Boolean);
 
       return names.length
-        ? `${foundDate} 搭機返台人員如下：\n${names.join('、')}`
+        ? `【${foundDate} 返台人員】\n${names.join('、')}`
         : `${foundDate} 目前無明確返台班機資料。`;
     }
 
@@ -905,19 +1121,21 @@ export default function App() {
 
       if (!items.length) return `${foundMember} 目前沒有行程資料。`;
 
-      return `${foundMember} 的行程如下：\n${items
+      return `【${foundMember} 的行程】\n${items
         .map(
           (item) =>
-            `• ${item.date} ${item.time || '時間未填'} ${item.activity || '未命名行程'}${
-              item.location ? `｜${item.location}` : ''
+            `- ${item.date} ${item.time || '時間未填'}｜${item.activity || '未命名行程'}${
+              cleanText(item.locationDisplay || item.location)
+                ? `｜${cleanText(item.locationDisplay || item.location)}`
+                : ''
             }`
         )
         .join('\n')}`;
     }
 
     return (
-      '目前尚未成功以 AI 精準回答，因此暫時以基本規則回覆。\n' +
-      '您可以改問例如：3/15行程、3/15那些人搭機返台、黃靖媛3/8晚餐在哪裡吃、郭昭宏何時抵達聖荷西。'
+      '目前尚未成功由 AI 精準回覆，先以基本規則回應。\n\n' +
+      '可改問例如：\n- 3/15行程\n- 3/15那些人搭機返台\n- 黃靖媛3/8晚餐在哪裡吃\n- 郭昭宏何時抵達聖荷西'
     );
   }
 
@@ -928,11 +1146,7 @@ export default function App() {
     if (!userText) return;
 
     setThinking(true);
-
-    setMessages((prev) => [
-      ...prev,
-      { role: 'user', text: userText },
-    ]);
+    setMessages((prev) => [...prev, { role: 'user', text: userText }]);
 
     if (!presetText) {
       setInput('');
@@ -949,22 +1163,16 @@ export default function App() {
 
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          question: userText,
-          context,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: userText, context }),
       });
 
       const rawText = await res.text();
-      console.log('/api/chat raw response =', rawText);
 
       let data = {};
       try {
         data = rawText ? JSON.parse(rawText) : {};
-      } catch (parseError) {
+      } catch {
         throw new Error(`API 回傳不是合法 JSON：${rawText || '空回應'}`);
       }
 
@@ -972,20 +1180,9 @@ export default function App() {
         throw new Error(data?.error || `HTTP ${res.status}`);
       }
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          text: data.answer || 'AI 暫時沒有回應。',
-        },
-      ]);
-
-      setThinking(false);
+      setMessages((prev) => [...prev, { role: 'assistant', text: data.answer || 'AI 暫時沒有回應。' }]);
     } catch (error) {
       console.error('AI 呼叫失敗：', error);
-
-      setThinking(false);
-
       setMessages((prev) => [
         ...prev,
         {
@@ -995,6 +1192,8 @@ export default function App() {
             fallbackAnswer(userText),
         },
       ]);
+    } finally {
+      setThinking(false);
     }
   }
 
@@ -1020,30 +1219,67 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
-      <header className="relative overflow-hidden bg-gradient-to-r from-slate-950 via-emerald-900 to-lime-700 text-white shadow-xl">
-        <div className="absolute inset-0 opacity-15">
-          <div className="absolute -right-8 -top-12 h-40 w-40 rounded-full bg-lime-300 blur-3xl" />
-          <div className="absolute bottom-0 left-8 h-32 w-32 rounded-full bg-emerald-300 blur-3xl" />
+      <header className="relative overflow-hidden bg-[radial-gradient(circle_at_top_right,_rgba(110,231,183,0.35),_transparent_28%),linear-gradient(135deg,#06121d_0%,#0b2d3f_45%,#0d6f6b_100%)] text-white shadow-xl">
+        <div className="absolute inset-0 opacity-20">
+          <div className="absolute -right-10 -top-16 h-48 w-48 rounded-full bg-emerald-300 blur-3xl" />
+          <div className="absolute left-8 top-12 h-32 w-32 rounded-full bg-cyan-300 blur-3xl" />
+          <div className="absolute bottom-0 right-1/3 h-40 w-40 rounded-full bg-lime-300 blur-3xl" />
         </div>
 
-        <div className="relative mx-auto max-w-6xl px-4 py-5 md:px-6 md:py-8">
-          <div className="text-2xl font-extrabold tracking-wide text-lime-100 md:text-3xl">
+        <div className="relative mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-10">
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-semibold tracking-[0.18em] text-emerald-100">
+            <ShieldCheck size={14} />
+            SMART TRAVEL ASSISTANT
+          </div>
+
+          <div className="mt-4 text-xl font-extrabold tracking-wide text-lime-100 md:text-2xl">
             秀傳醫療體系
           </div>
 
-          <h1 className="mt-2 text-2xl font-extrabold leading-tight tracking-tight md:text-4xl">
+          <h1 className="mt-2 text-3xl font-extrabold leading-tight tracking-tight md:text-5xl">
             2026 HIMSS+GTC 參訪團
           </h1>
 
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-emerald-50 md:text-base md:leading-7">
-            快速掌握每日行程、國際航空、餐會、參訪、住宿、會議、任務與準備、重要資訊與注意事項
+          <p className="mt-4 max-w-3xl text-sm leading-7 text-emerald-50 md:text-base">
+            手機優先的 AI 行程助理網站，整合每日行程、國際航空、餐會、參訪、住宿、會議資訊、文件連結與任務準備。
           </p>
+
+          <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
+            <StatCard
+              title="行程筆數"
+              value={tripData.length}
+              hint="含車程、餐敘、會議、參訪、住宿"
+              icon={<CalendarDays size={20} />}
+              tone="emerald"
+            />
+            <StatCard
+              title="團員人數"
+              value={peopleData.length}
+              hint="可用人員篩選與 AI 查詢"
+              icon={<Users size={20} />}
+              tone="sky"
+            />
+            <StatCard
+              title="班機資料"
+              value={taskData.length}
+              hint="出發、抵達、返台以任務表為主"
+              icon={<Plane size={20} />}
+              tone="violet"
+            />
+            <StatCard
+              title="參考文件"
+              value={referenceData.length}
+              hint="官方資訊、手冊、注意事項"
+              icon={<FileText size={20} />}
+              tone="amber"
+            />
+          </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-6xl px-3 py-4 md:px-6 md:py-6">
         <section className="mb-4 rounded-3xl border border-slate-200 bg-white p-3 shadow-sm md:mb-6 md:p-5">
-          <div className="grid grid-cols-2 gap-2 md:flex md:flex-wrap">
+          <div className="flex gap-2 overflow-x-auto pb-1">
             {mainTabs.map((tab) => (
               <button
                 key={tab.key}
@@ -1051,7 +1287,7 @@ export default function App() {
                   setActiveMainTab(tab.key);
                   setSelectedSubDate('全選');
                 }}
-                className={`rounded-2xl px-4 py-3 text-sm font-medium transition-all ${
+                className={`flex-shrink-0 rounded-2xl px-4 py-3 text-sm font-medium transition-all ${
                   activeMainTab === tab.key
                     ? 'bg-emerald-700 text-white shadow'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
@@ -1068,11 +1304,12 @@ export default function App() {
 
         {!loading && !loadError && activeMainTab === 'daily' && (
           <section className="space-y-4">
-            <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-              <h2 className="text-xl font-bold md:text-2xl">每日行程</h2>
-              <p className="mt-2 text-sm text-slate-600 md:text-base">可逐日查看全部安排，並依人員篩選。</p>
-
-              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_280px]">
+            <SectionCard
+              title="每日行程"
+              icon={<CalendarDays size={20} className="text-emerald-700" />}
+              subtitle="可逐日查看全部安排，並依人員篩選。"
+            >
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_280px]">
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {allDates.map((date) => (
                     <button
@@ -1104,7 +1341,7 @@ export default function App() {
                   </select>
                 </div>
               </div>
-            </div>
+            </SectionCard>
 
             {dailyData.length > 0 ? (
               dailyData.map((item, index) => (
@@ -1118,7 +1355,11 @@ export default function App() {
 
         {!loading && !loadError && activeMainTab === 'flight' && (
           <section className="space-y-4">
-            <SectionCard title="國際航空" icon={<Plane size={20} className="text-slate-700" />}>
+            <SectionCard
+              title="國際航空"
+              icon={<Plane size={20} className="text-slate-700" />}
+              subtitle="本頁以 web-任務 中的 name + fly 為主，供查詢出發、抵達與返台資訊。"
+            >
               <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-[280px_1fr]">
                 <div>
                   <div className="mb-2 text-sm font-semibold text-slate-600">人員篩選</div>
@@ -1139,8 +1380,11 @@ export default function App() {
               <div className="space-y-3">
                 {filteredInternationalFlightData.length > 0 ? (
                   filteredInternationalFlightData.map((person, idx) => (
-                    <div key={`${person.name}-${idx}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                      <div className="text-lg font-bold text-slate-800">{person.name}</div>
+                    <div key={`${person.name}-${idx}`} className="rounded-3xl border border-slate-100 bg-slate-50 p-4">
+                      <div className="flex items-center gap-2 text-lg font-bold text-slate-800">
+                        <Plane size={18} className="text-slate-500" />
+                        {person.name}
+                      </div>
                       <div className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-700">
                         {person.fly || '未提供班機資訊'}
                       </div>
@@ -1171,7 +1415,7 @@ export default function App() {
 
         {!loading && !loadError && activeMainTab === 'visit' && (
           <section className="space-y-4">
-            <SectionCard title="參訪" icon={<BookOpen size={20} className="text-violet-700" />}>
+            <SectionCard title="參訪" icon={<Building2 size={20} className="text-violet-700" />}>
               {renderDateFilter()}
             </SectionCard>
             {visitData.length > 0 ? (
@@ -1216,7 +1460,11 @@ export default function App() {
 
         {!loading && !loadError && activeMainTab === 'conference' && (
           <section className="space-y-4">
-            <SectionCard title="Conference資訊" icon={<Cpu size={20} className="text-sky-700" />}>
+            <SectionCard
+              title="Conference資訊"
+              icon={<Cpu size={20} className="text-sky-700" />}
+              subtitle="會議官方資訊、手冊與相關會場資料整合。"
+            >
               {renderDateFilter()}
             </SectionCard>
 
@@ -1230,7 +1478,7 @@ export default function App() {
                     href={himssConferenceReferenceLink}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-2 rounded-xl bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
+                    className="inline-flex items-center gap-2 rounded-2xl bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
                   >
                     <ExternalLink size={16} />
                     開啟 HIMSS 官方資訊
@@ -1240,27 +1488,27 @@ export default function App() {
                       href={himssHandbookLink}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800"
+                      className="inline-flex items-center gap-2 rounded-2xl bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800"
                     >
                       <FileText size={16} />
                       開啟 HIMSS 手冊
                     </a>
                   ) : (
-                    <div className="text-sm text-rose-600">HIMSS 手冊連結尚未提供完整網址</div>
+                    <div className="text-sm text-rose-600">資料問題：HIMSS 手冊連結尚未提供有效網址</div>
                   )}
                 </div>
               </SectionCard>
 
-              <SectionCard title="GTC 2026 官方網站" icon={<Cpu size={20} className="text-green-700" />}>
+              <SectionCard title="GTC 2026 官方網站" icon={<Globe size={20} className="text-green-700" />}>
                 <p className="text-sm leading-6 text-slate-600">
-                  NVIDIA GTC 官方網站，供查看主題、最新議程、Keynote 與官方公告。
+                  NVIDIA GTC 官方網站，供查看主題、議程、Keynote 與官方公告。
                 </p>
                 <div className="mt-4">
                   <a
                     href={GTC_CONFERENCE_URL}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-2 rounded-xl bg-green-700 px-4 py-2 text-sm font-medium text-white hover:bg-green-800"
+                    className="inline-flex items-center gap-2 rounded-2xl bg-green-700 px-4 py-2 text-sm font-medium text-white hover:bg-green-800"
                   >
                     <ExternalLink size={16} />
                     開啟 GTC 官方網站
@@ -1282,12 +1530,16 @@ export default function App() {
         {!loading && !loadError && activeMainTab === 'taskPrep' && (
           <section className="space-y-4">
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              <SectionCard title="工作分派" icon={<ClipboardList size={20} className="text-emerald-700" />}>
+              <SectionCard
+                title="工作分派"
+                icon={<ClipboardList size={20} className="text-emerald-700" />}
+                subtitle="依 web-人員 顯示 name + task。"
+              >
                 <div className="space-y-3">
                   {workAssignments.length > 0 ? (
                     workAssignments.map((person, idx) => (
                       <div key={`${person.name}-${idx}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                        <div className="font-bold text-slate-800">
+                        <div className="font-bold leading-7 text-slate-800">
                           {person.name}
                           {person.task ? `　${person.task}` : ''}
                         </div>
@@ -1299,21 +1551,14 @@ export default function App() {
                 </div>
               </SectionCard>
 
-              <SectionCard title="禮品準備與行前準備" icon={<Gift size={20} className="text-amber-700" />}>
+              <SectionCard
+                title="禮品準備與行前準備"
+                icon={<Gift size={20} className="text-amber-700" />}
+                subtitle="前端採通用欄位渲染，不綁死舊欄位結構。"
+              >
                 <div className="space-y-3">
                   {prepData.length > 0 ? (
-                    prepData.map((row, idx) => (
-                      <div key={idx} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                        {Object.entries(row)
-                          .filter(([, value]) => cleanText(value))
-                          .map(([key, value]) => (
-                            <div key={key} className="mb-1 text-sm text-slate-700">
-                              <span className="font-semibold text-slate-800">{key}：</span>
-                              {value}
-                            </div>
-                          ))}
-                      </div>
-                    ))
+                    prepData.map((row, idx) => <SimpleKeyValueCard key={idx} data={row} />)
                   ) : (
                     <EmptyCard title="目前無準備資訊資料" />
                   )}
@@ -1325,7 +1570,11 @@ export default function App() {
 
         {!loading && !loadError && activeMainTab === 'notice' && (
           <section className="grid grid-cols-1 gap-4">
-            <SectionCard title="重要資訊與注意事項" icon={<AlertCircle size={20} className="text-amber-700" />}>
+            <SectionCard
+              title="重要資訊與注意事項"
+              icon={<AlertCircle size={20} className="text-amber-700" />}
+              subtitle="包含出訪文件、飲食資訊與行程注意事項。"
+            >
               <div className="mb-5 flex flex-wrap gap-2">
                 <button
                   onClick={() => setNoticeTab('files')}
@@ -1362,8 +1611,8 @@ export default function App() {
               {noticeTab === 'files' && (
                 <div className="space-y-4">
                   {tripPlanLink && (
-                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                      <div className="text-base font-bold text-slate-800">2026 HIMSS&GTC 出訪團規劃</div>
+                    <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-4">
+                      <div className="text-base font-bold text-slate-800">2026 HIMSS+GTC 出訪團規劃</div>
                       <div className="mt-2 text-sm leading-6 text-slate-600">
                         包含責任義務、返國附件、繳交與出訪相關規範。
                       </div>
@@ -1372,7 +1621,7 @@ export default function App() {
                           href={tripPlanLink}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-800"
+                          className="inline-flex items-center gap-2 rounded-2xl bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-800"
                         >
                           <FileText size={16} />
                           開啟文件
@@ -1381,7 +1630,7 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
+                  <div className="rounded-3xl border border-sky-100 bg-sky-50 p-4">
                     <div className="text-base font-bold text-slate-800">HIMSS 03/09–03/12</div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {['3/9', '3/10', '3/11', '3/12'].map((day) =>
@@ -1391,7 +1640,7 @@ export default function App() {
                             href={himssDailyLinks[day]}
                             target="_blank"
                             rel="noreferrer"
-                            className="inline-flex items-center gap-2 rounded-xl bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
+                            className="inline-flex items-center gap-2 rounded-2xl bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
                           >
                             <BookOpen size={16} />
                             {day}
@@ -1399,7 +1648,7 @@ export default function App() {
                         ) : (
                           <span
                             key={day}
-                            className="inline-flex items-center gap-2 rounded-xl bg-slate-200 px-4 py-2 text-sm font-medium text-slate-500"
+                            className="inline-flex items-center gap-2 rounded-2xl bg-slate-200 px-4 py-2 text-sm font-medium text-slate-500"
                           >
                             {day}
                           </span>
@@ -1414,32 +1663,29 @@ export default function App() {
                         const title = cleanText(item.item);
                         return !/0309|03\/09|3\/9|0310|03\/10|3\/10|0311|03\/11|3\/11|0312|03\/12|3\/12/i.test(title);
                       })
-                      .map((item, index) => {
-                        const safeLink = normalizeLink(item.link);
-                        return (
-                          <div key={`${item.item}-${index}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                            <div className="text-sm font-bold text-slate-800">{item.item || '未命名項目'}</div>
-                            {item.content && (
-                              <div className="mt-2 text-sm leading-6 text-slate-600">{item.content}</div>
-                            )}
-                            {safeLink ? (
-                              <div className="mt-3">
-                                <a
-                                  href={safeLink}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800"
-                                >
-                                  <ExternalLink size={16} />
-                                  開啟連結
-                                </a>
-                              </div>
-                            ) : (
-                              <div className="mt-2 text-sm text-rose-600">此筆連結不是完整網址</div>
-                            )}
-                          </div>
-                        );
-                      })}
+                      .map((item, index) => (
+                        <div key={`${item.item}-${index}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                          <div className="text-sm font-bold text-slate-800">{item.item || '未命名項目'}</div>
+                          {item.content && (
+                            <div className="mt-2 text-sm leading-6 text-slate-600">{item.content}</div>
+                          )}
+                          {item.linkHref ? (
+                            <div className="mt-3">
+                              <a
+                                href={item.linkHref}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-2 rounded-2xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800"
+                              >
+                                <ExternalLink size={16} />
+                                開啟連結
+                              </a>
+                            </div>
+                          ) : item.link ? (
+                            <div className="mt-2 text-sm text-rose-600">資料問題：此筆連結不是有效網址</div>
+                          ) : null}
+                        </div>
+                      ))}
                   </div>
                 </div>
               )}
@@ -1469,7 +1715,7 @@ export default function App() {
               {noticeTab === 'travel' && (
                 <div className="space-y-4">
                   {himssHandbookLink && (
-                    <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
+                    <div className="rounded-3xl border border-indigo-100 bg-indigo-50 p-4">
                       <div className="text-base font-bold text-slate-800">HIMSS行程資料、飛資得</div>
                       <div className="mt-2 text-sm leading-6 text-slate-600">
                         建議先查看完整文件，確認氣候、電源、旅行社聯繫窗口、交通集合與其他旅遊注意事項。
@@ -1479,7 +1725,7 @@ export default function App() {
                           href={himssHandbookLink}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800"
+                          className="inline-flex items-center gap-2 rounded-2xl bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800"
                         >
                           <FileText size={16} />
                           開啟 HIMSS行程資料、飛資得
@@ -1495,19 +1741,21 @@ export default function App() {
                         {item.content && (
                           <div className="mt-2 text-sm leading-6 text-slate-600">{item.content}</div>
                         )}
-                        {normalizeLink(item.link) && (
+                        {item.linkHref ? (
                           <div className="mt-3">
                             <a
-                              href={normalizeLink(item.link)}
+                              href={item.linkHref}
                               target="_blank"
                               rel="noreferrer"
-                              className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800"
+                              className="inline-flex items-center gap-2 rounded-2xl bg-indigo-700 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-800"
                             >
                               <ExternalLink size={16} />
                               開啟連結
                             </a>
                           </div>
-                        )}
+                        ) : item.link ? (
+                          <div className="mt-2 text-sm text-rose-600">資料問題：此筆連結不是有效網址</div>
+                        ) : null}
                       </div>
                     ))
                   ) : (
@@ -1523,43 +1771,39 @@ export default function App() {
 
         {!loading && !loadError && activeMainTab === 'ai' && (
           <section className="grid grid-cols-1 gap-4">
-            <SectionCard title="AI 助手" icon={<Bot size={22} className="text-emerald-700" />}>
-              <div className="grid grid-cols-1 gap-6 lg:grid-cols-[340px_1fr] items-start">
-                <div className="rounded-3xl border border-slate-200 bg-gradient-to-b from-emerald-50 to-cyan-50 p-6 text-center shadow-sm">
+            <SectionCard
+              title="AI 助手"
+              icon={<Bot size={22} className="text-emerald-700" />}
+              subtitle="以規則判讀優先，搭配 OpenAI 補強，用於查詢行程、地址、地圖、班機、文件與準備事項。"
+            >
+              <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[340px_1fr]">
+                <div className="rounded-3xl border border-slate-200 bg-[linear-gradient(180deg,#f0fdf4_0%,#ecfeff_100%)] p-6 shadow-sm">
                   <div className="space-y-4 text-center">
-                    <div className="text-xs font-semibold tracking-[0.18em] text-emerald-600">
+                    <div className="inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-white/70 px-3 py-1 text-xs font-semibold tracking-[0.18em] text-emerald-600">
+                      <MessageCircle size={14} />
                       AI CUSTOMER ASSISTANT
                     </div>
 
                     <img
                       src="/xiuchuan-ai-secretary.png"
                       alt="秀傳AI小秘書"
-                      className="mx-auto w-64 md:w-80 lg:w-96 drop-shadow-lg"
+                      className="mx-auto w-56 md:w-64 lg:w-72 drop-shadow-lg"
                     />
 
-                    <div className="text-2xl font-bold text-emerald-700">
-                      秀傳 AI 小秘書
-                    </div>
+                    <div className="text-2xl font-bold text-emerald-700">秀傳AI小秘書</div>
 
-                    <p className="text-sm leading-6 text-slate-600">
-                      我是秀傳醫療體系 AI 參訪助手，
-                      <br />
-                      可以協助查詢行程、班機、餐會、參訪、住宿，
-                      <br />
-                      以及 HIMSS、GTC 相關資訊。
+                    <p className="text-sm leading-7 text-slate-600">
+                      協助查詢每日行程、國際航空、餐會、住宿、參訪、會議、文件連結與禮品準備。
                     </p>
 
                     <div className="flex items-center justify-center gap-2 text-sm text-emerald-700">
-                      <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                      <div className="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-500" />
                       AI 即時服務中
                     </div>
 
-                    <div className="pt-2">
-                      <div className="mb-3 text-sm font-semibold text-slate-700">
-                        快速提問
-                      </div>
-
-                      <div className="flex flex-wrap justify-center gap-2">
+                    <div className="rounded-2xl border border-white/70 bg-white/70 p-4 text-left">
+                      <div className="mb-3 text-sm font-semibold text-slate-700">快速提問</div>
+                      <div className="flex flex-wrap gap-2">
                         {quickQuestions.map((q) => (
                           <button
                             key={q}
@@ -1575,31 +1819,28 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex h-[520px] flex-col rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="mb-3 border-b border-slate-100 pb-3">
+                <div className="flex h-[620px] flex-col rounded-3xl border border-slate-200 bg-white shadow-sm">
+                  <div className="border-b border-slate-100 px-4 py-4 md:px-5">
                     <p className="text-sm leading-7 text-slate-600 md:text-base">
-                      可直接查詢行程、國際航空、參訪、餐會、GTC 官方網站、HIMSS 官方資訊、重要文件，
-                      並支援簡單自然語言查詢。
+                      可直接詢問地址、地點、某日全部行程、返台班機、某人相關安排、文件與官方資訊。
                     </p>
                   </div>
 
-                  <div className="flex-1 space-y-3 overflow-y-auto pr-1">
+                  <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4 md:px-5">
                     {messages.map((message, idx) => (
                       <div
                         key={`${message.role}-${idx}`}
-                        className={`flex ${
-                          message.role === 'user' ? 'justify-end' : 'justify-start'
-                        }`}
+                        className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                       >
                         <div
-                          className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap ${
+                          className={`max-w-[92%] rounded-3xl px-4 py-3 text-sm ${
                             message.role === 'user'
                               ? 'bg-emerald-700 text-white'
                               : 'border border-slate-200 bg-slate-50 text-slate-700'
                           }`}
                         >
                           {message.role === 'assistant' && (
-                            <div className="mb-2 flex items-center gap-2 text-xs font-bold text-emerald-700">
+                            <div className="mb-3 flex items-center gap-2 text-xs font-bold text-emerald-700">
                               <img
                                 src="/xiuchuan-ai-secretary.png"
                                 alt="AI"
@@ -1608,16 +1849,21 @@ export default function App() {
                               AI 回覆
                             </div>
                           )}
-                          {message.text}
+
+                          {message.role === 'assistant' ? (
+                            <AIAnswerContent text={message.text} />
+                          ) : (
+                            <div className="whitespace-pre-wrap leading-7">{message.text}</div>
+                          )}
                         </div>
                       </div>
                     ))}
 
                     {thinking && (
                       <div className="flex justify-start">
-                        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+                        <div className="rounded-3xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
                           <div className="flex items-center gap-2">
-                            <div className="animate-pulse">🤖</div>
+                            <Bot size={16} className="animate-pulse text-emerald-700" />
                             <div>AI 思考中...</div>
                           </div>
                         </div>
@@ -1627,20 +1873,22 @@ export default function App() {
                     <div ref={chatEndRef} />
                   </div>
 
-                  <form onSubmit={handleSendMessage} className="mt-4 flex gap-2">
-                    <input
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      placeholder="例如：3/15那些人搭機返台"
-                      className="flex-1 rounded-2xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                    <button
-                      type="submit"
-                      disabled={thinking}
-                      className="inline-flex items-center justify-center rounded-2xl bg-emerald-700 px-4 py-3 text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-emerald-400"
-                    >
-                      <Send size={18} />
-                    </button>
+                  <form onSubmit={handleSendMessage} className="border-t border-slate-100 p-4 md:p-5">
+                    <div className="flex gap-2">
+                      <input
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        placeholder="例如：3/15那些人搭機返台"
+                        className="flex-1 rounded-2xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                      <button
+                        type="submit"
+                        disabled={thinking}
+                        className="inline-flex items-center justify-center rounded-2xl bg-emerald-700 px-4 py-3 text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-emerald-400"
+                      >
+                        <Send size={18} />
+                      </button>
+                    </div>
                   </form>
                 </div>
               </div>
