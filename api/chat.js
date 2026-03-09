@@ -60,12 +60,7 @@ function shiftDate(baseDateText, offsetDays) {
   const match = normalized.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
   if (!match) return '';
 
-  const dt = new Date(
-    Number(match[1]),
-    Number(match[2]) - 1,
-    Number(match[3])
-  );
-
+  const dt = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
   if (Number.isNaN(dt.getTime())) return '';
 
   dt.setDate(dt.getDate() + offsetDays);
@@ -130,20 +125,6 @@ function looksLikeGoogleMap(value) {
   return /google\.com\/maps|maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google/i.test(link);
 }
 
-function removeUrlsFromText(value) {
-  return cleanText(value)
-    .replace(/https?:\/\/[^\s]+/gi, '')
-    .replace(/www\.[^\s]+/gi, '')
-    .replace(/\n{2,}/g, '\n')
-    .trim();
-}
-
-function extractAddressText(value) {
-  const raw = cleanText(value);
-  if (!raw) return '';
-  return removeUrlsFromText(raw);
-}
-
 function buildGoogleMapSearchUrl(keyword) {
   const text = cleanText(keyword);
   if (!text) return '';
@@ -177,99 +158,17 @@ function extractReadablePlaceFromMapUrl(url) {
   }
 }
 
-function buildDisplayLocation(rawLocation, mapHref) {
-  const locationText = cleanText(rawLocation);
-  const addressOnlyText = extractAddressText(rawLocation);
+function buildDisplayLocation(addressText, mapHref) {
+  const address = cleanText(addressText);
 
-  if (addressOnlyText) {
-    return addressOnlyText;
-  }
+  if (address) return address;
 
   const parsedFromMap = extractReadablePlaceFromMapUrl(mapHref);
   if (parsedFromMap) return parsedFromMap;
 
-  if (mapHref || looksLikeGoogleMap(locationText)) {
-    return '地址文字未填，已提供地圖連結';
-  }
+  if (mapHref) return '地址文字未填，已提供地圖連結';
 
   return '';
-}
-
-function mapTripItem(row) {
-  const rawLocation = getValue(row, ['location', 'locationDisplay']);
-  const officialLink = getValue(row, ['officialLink', 'officialLinkHref']);
-  const linkUrl = getValue(row, ['linkUrl', 'linkUrlHref']);
-  const localMap = getValue(row, ['localMap', 'localmap', 'mapLink', 'localMapHref']);
-
-  const locationHref = normalizeLink(rawLocation);
-  const officialHref = normalizeLink(officialLink);
-  const linkHref = normalizeLink(linkUrl);
-  const localMapHref = normalizeLink(localMap);
-
-  const locationHasMap = looksLikeGoogleMap(rawLocation);
-  const officialIsMap = officialHref && looksLikeGoogleMap(officialLink);
-  const linkIsMap = linkHref && looksLikeGoogleMap(linkUrl);
-
-  const addressText = extractAddressText(rawLocation);
-
-  const finalMapHref =
-    localMapHref ||
-    (locationHasMap ? locationHref : '') ||
-    (officialIsMap ? officialHref : '') ||
-    (linkIsMap ? linkHref : '') ||
-    (addressText ? buildGoogleMapSearchUrl(addressText) : '');
-
-  const locationDisplay =
-    getValue(row, ['locationDisplay']) || buildDisplayLocation(rawLocation, finalMapHref);
-
-  return {
-    category: getValue(row, ['category']),
-    activityType: getValue(row, ['activityType']),
-    date: normalizeDate(getValue(row, ['date'])),
-    time: getValue(row, ['time']),
-    activity: getValue(row, ['activity']),
-    location: addressText,
-    locationDisplay,
-    members: getValue(row, ['members']),
-    contact: getValue(row, ['contact']),
-    transitTime: getValue(row, ['transitTime']),
-    note: getValue(row, ['note']),
-    officialLink,
-    officialLinkHref: !officialIsMap ? officialHref : '',
-    linkUrl,
-    linkUrlHref: !linkIsMap ? linkHref : '',
-    localMap,
-    localMapHref: finalMapHref,
-    attachmentUrl: getValue(row, ['attachmentUrl']),
-  };
-}
-
-function mapTaskItem(row) {
-  return {
-    name: getValue(row, ['name']),
-    fly: getValue(row, ['fly']),
-    diet: getValue(row, ['diet']),
-    foodsAvoid: getValue(row, ['foodsAvoid', 'foods avoid']),
-  };
-}
-
-function mapReferenceItem(row) {
-  return {
-    item: getValue(row, ['item', '項目']),
-    link: getValue(row, ['link', '連結']),
-    linkHref: normalizeLink(getValue(row, ['link', '連結', 'linkHref'])),
-    content: getValue(row, ['content', '內容', '摘要', 'note']),
-  };
-}
-
-function mapPeopleItem(row) {
-  return {
-    name: getValue(row, ['name']),
-    englishName: getValue(row, ['englishName']),
-    task: getValue(row, ['task']),
-    phone: getValue(row, ['phone']),
-    note: getValue(row, ['note']),
-  };
 }
 
 function flattenSearchableText(obj) {
@@ -300,45 +199,101 @@ function findBestMemberInQuestion(question, members) {
   return bestScore >= 0.66 ? bestName : '';
 }
 
+function normalizeTimeForSort(value) {
+  const t = cleanText(value);
+  if (!t) return '99:99';
+
+  const m1 = t.match(/(\d{1,2}):(\d{2})/);
+  if (m1) return `${m1[1].padStart(2, '0')}:${m1[2]}`;
+
+  const m2 = t.match(/(\d{1,2})[：:](\d{1,2})/);
+  if (m2) return `${m2[1].padStart(2, '0')}:${m2[2].padStart(2, '0')}`;
+
+  const m3 = t.match(/(\d{1,2})點(?:半)?/);
+  if (m3) return `${m3[1].padStart(2, '0')}:${t.includes('半') ? '30' : '00'}`;
+
+  return t;
+}
+
 function sortByDateTime(a, b) {
-  const aKey = `${a.date || ''} ${a.time || ''}`;
-  const bKey = `${b.date || ''} ${b.time || ''}`;
+  const aKey = `${normalizeDate(a.date)} ${normalizeTimeForSort(a.time)}`;
+  const bKey = `${normalizeDate(b.date)} ${normalizeTimeForSort(b.time)}`;
   return aKey.localeCompare(bKey, 'zh-Hant');
 }
 
-function formatTripLine(item) {
-  const time = cleanText(item.time) || '時間未填';
-  const activity = cleanText(item.activity) || '未命名行程';
-  const location = cleanText(item.locationDisplay || item.location);
-  return `- ${time}｜${activity}${location ? `｜${location}` : ''}`;
+function mapTripItem(row) {
+  const address = getValue(row, ['address', '地址']);
+  const mapLink = getValue(row, ['location', 'localmap', 'localMap', 'mapLink']);
+  const officialLink = getValue(row, ['officialLink']);
+  const linkUrl = getValue(row, ['linkUrl', 'link']);
+
+  const mapHref = normalizeLink(mapLink);
+  const officialHref = normalizeLink(officialLink);
+  const linkHref = normalizeLink(linkUrl);
+
+  const officialIsMap = officialHref && looksLikeGoogleMap(officialHref);
+  const linkIsMap = linkHref && looksLikeGoogleMap(linkHref);
+
+  const finalMapHref =
+    mapHref ||
+    (officialIsMap ? officialHref : '') ||
+    (linkIsMap ? linkHref : '') ||
+    (address ? buildGoogleMapSearchUrl(address) : '');
+
+  const locationDisplay = buildDisplayLocation(address, finalMapHref);
+
+  return {
+    category: getValue(row, ['category']),
+    activityType: getValue(row, ['activityType']),
+    date: normalizeDate(getValue(row, ['date'])),
+    time: getValue(row, ['time']),
+    activity: getValue(row, ['activity']),
+    address,
+    location: mapLink,
+    locationDisplay,
+    members: getValue(row, ['members']),
+    contact: getValue(row, ['window', 'contact']),
+    transitTime: getValue(row, ['transport', 'transitTime']),
+    note: getValue(row, ['note']),
+    officialLink,
+    officialLinkHref: !officialIsMap ? officialHref : '',
+    linkUrl,
+    linkUrlHref: !linkIsMap ? linkHref : '',
+    localMap: mapLink,
+    localMapHref: finalMapHref,
+    attachmentUrl: getValue(row, ['attachmentUrl']),
+  };
 }
 
-function formatLocationBlock(item) {
-  const lines = [];
-  lines.push(`- 項目：${cleanText(item.activity) || '未命名活動'}`);
-  if (item.date || item.time) {
-    lines.push(`- 日期時間：${cleanText(item.date)} ${cleanText(item.time)}`.trim());
-  }
+function mapTaskItem(row) {
+  return {
+    name: getValue(row, ['name']),
+    task: getValue(row, ['task']),
+    phone: getValue(row, ['phone']),
+    note: getValue(row, ['note']),
+    fly: getValue(row, ['fly']),
+    diet: getValue(row, ['diet']),
+    foodsAvoid: getValue(row, ['foodsAvoid', 'foods avoid']),
+  };
+}
 
-  const locationText = cleanText(item.locationDisplay || item.location);
-  if (locationText) {
-    lines.push(`- 地點：${locationText}`);
-  }
+function mapReferenceItem(row) {
+  return {
+    item: getValue(row, ['item', '項目']),
+    link: getValue(row, ['link', '連結']),
+    linkHref: normalizeLink(getValue(row, ['link', '連結', 'linkHref'])),
+    content: getValue(row, ['content', '內容', '摘要', 'note']),
+  };
+}
 
-  if (item.localMapHref) {
-    lines.push(`地圖：${item.localMapHref}`);
-  }
-
-  if (item.note) {
-    lines.push(`- 補充：${cleanText(item.note)}`);
-  }
-
-  const webLink = cleanText(item.officialLinkHref || item.linkUrlHref);
-  if (webLink) {
-    lines.push(`連結：${webLink}`);
-  }
-
-  return lines.join('\n');
+function mapPeopleItem(row) {
+  return {
+    name: getValue(row, ['name']),
+    englishName: getValue(row, ['englishName']),
+    task: getValue(row, ['task']),
+    phone: getValue(row, ['phone']),
+    note: getValue(row, ['note']),
+  };
 }
 
 function parseFlightInfo(flyText) {
@@ -354,31 +309,132 @@ function parseFlightInfo(flyText) {
   };
 }
 
+function mealIntentFromQuestion(question) {
+  const q = normalizeQuestion(question);
+
+  if (q.includes('早餐')) return 'breakfast';
+  if (q.includes('午餐') || q.includes('午宴')) return 'lunch';
+  if (q.includes('晚餐') || q.includes('晚宴') || q.includes('晚上吃飯') || q.includes('晚上的餐')) return 'dinner';
+  if (q.includes('餐廳') || q.includes('餐會') || q.includes('吃飯')) return 'meal';
+
+  return '';
+}
+
+function scoreMealByIntent(item, mealIntent) {
+  const hay = flattenSearchableText(item);
+
+  if (!mealIntent) return 0;
+
+  if (mealIntent === 'breakfast') {
+    if (/早餐|breakfast/i.test(hay)) return 10;
+    return 0;
+  }
+
+  if (mealIntent === 'lunch') {
+    if (/午餐|午宴|lunch/i.test(hay)) return 10;
+    return 0;
+  }
+
+  if (mealIntent === 'dinner') {
+    if (/晚餐|晚宴|dinner|reception/i.test(hay)) return 10;
+    if (/18:|19:|20:|21:|晚上|傍晚/.test(cleanText(item.time))) return 6;
+    return 0;
+  }
+
+  if (mealIntent === 'meal') {
+    if (/餐|宴|reception|dinner|lunch|breakfast/i.test(hay)) return 8;
+  }
+
+  return 0;
+}
+
+function isMealItem(item) {
+  const hay = flattenSearchableText(item);
+  return /餐|晚宴|午宴|早餐|午餐|晚餐|Reception|Dinner|Lunch/i.test(hay);
+}
+
 function answerPeopleList(peopleData) {
   const names = peopleData.map((p) => cleanText(p.name)).filter(Boolean);
-  if (!names.length) return '';
+  if (!names.length) return null;
   return `【人員名單】\n${names.join('、')}`;
 }
 
-function answerPrep(prepData) {
-  if (!prepData.length) return '';
-  const lines = ['【禮品準備 / 行前準備】'];
-  prepData.slice(0, 20).forEach((row) => {
-    const parts = Object.entries(row)
-      .filter(([, value]) => cleanText(value))
-      .map(([key, value]) => `${key}：${cleanText(value)}`);
-    if (parts.length) lines.push(`- ${parts.join('｜')}`);
-  });
-  return lines.join('\n');
-}
+function answerPhoneQuestion(question, taskData, peopleData) {
+  const q = normalizeQuestion(question);
 
-function answerTripPlan(referenceData) {
-  const found = referenceData.find((item) => /出訪團規劃/.test(cleanText(item.item)));
-  if (!found) return '';
-  const lines = ['【出訪團規劃】'];
-  if (found.content) lines.push(found.content);
-  if (found.linkHref) lines.push(`連結：${found.linkHref}`);
-  return lines.join('\n');
+  if (!(q.includes('電話') || q.includes('電話號碼') || q.includes('聯絡電話'))) {
+    return null;
+  }
+
+  const merged = [
+    ...taskData.map((x) => ({
+      name: x.name,
+      phone: x.phone,
+      task: x.task,
+      note: x.note,
+    })),
+    ...peopleData.map((x) => ({
+      name: x.name,
+      phone: x.phone,
+      task: x.task,
+      note: x.note,
+    })),
+  ]
+    .filter((x) => cleanText(x.name) || cleanText(x.phone))
+    .reduce((acc, item) => {
+      const key = cleanText(item.name);
+
+      if (!key) {
+        acc.push(item);
+        return acc;
+      }
+
+      const existing = acc.find((x) => cleanText(x.name) === key);
+
+      if (!existing) {
+        acc.push(item);
+      } else if (!cleanText(existing.phone) && cleanText(item.phone)) {
+        existing.phone = item.phone;
+      }
+
+      return acc;
+    }, []);
+
+  if (!merged.length) {
+    return '抱歉，目前資料中沒有提供電話號碼。';
+  }
+
+  const allNames = merged.map((p) => p.name).filter(Boolean);
+  const member = findBestMemberInQuestion(q, allNames);
+
+  if (member && !q.includes('全部')) {
+    const found = merged.filter(
+      (item) =>
+        cleanText(item.name) === member ||
+        cleanText(item.name).includes(member) ||
+        member.includes(cleanText(item.name))
+    );
+
+    const foundWithPhone = found.filter((item) => cleanText(item.phone));
+
+    if (foundWithPhone.length) {
+      return `【${member} 電話】\n${foundWithPhone
+        .map((item) => `- ${item.name || '未填姓名'}：${item.phone || '未提供'}`)
+        .join('\n')}`;
+    }
+
+    return `【${member} 電話】\n目前未提供電話號碼。`;
+  }
+
+  const phones = merged.filter((item) => cleanText(item.phone));
+
+  if (!phones.length) {
+    return '抱歉，目前資料中沒有提供電話號碼。';
+  }
+
+  return `【全部電話】\n${phones
+    .map((item) => `- ${item.name || '未填姓名'}：${item.phone || '未提供'}`)
+    .join('\n')}`;
 }
 
 function answerConferenceInfo(question, referenceData) {
@@ -400,16 +456,17 @@ function answerConferenceInfo(question, referenceData) {
     } else {
       lines.push('連結：https://www.himssconference.com/');
     }
+
     return lines.join('\n');
   }
 
-  return '';
+  return null;
 }
 
 function answerDaySchedule(question, tripData, currentDate) {
   const q = normalizeQuestion(question);
   const dateToken = extractDateToken(q, currentDate);
-  if (!dateToken || !q.includes('行程')) return '';
+  if (!dateToken || !q.includes('行程')) return null;
 
   const items = tripData
     .filter((item) => normalizeDate(item.date) === dateToken)
@@ -417,9 +474,14 @@ function answerDaySchedule(question, tripData, currentDate) {
 
   if (!items.length) return `${dateToken} 目前沒有行程資料。`;
 
-  const lines = [`【${dateToken} 行程】`];
-  items.forEach((item) => lines.push(formatTripLine(item)));
-  return lines.join('\n');
+  return `【${dateToken} 行程】\n${items
+    .map((item) => {
+      const time = cleanText(item.time) || '時間未填';
+      const activity = cleanText(item.activity) || '未命名行程';
+      const location = cleanText(item.locationDisplay || item.address);
+      return `- ${time}｜${activity}${location ? `｜${location}` : ''}`;
+    })
+    .join('\n')}`;
 }
 
 function answerReturnTaiwan(question, taskData, currentDate) {
@@ -427,7 +489,7 @@ function answerReturnTaiwan(question, taskData, currentDate) {
   const dateToken = extractDateToken(q, currentDate);
 
   if (!(q.includes('返台') || q.includes('誰回台灣') || q.includes('搭機返台') || q.includes('返程班機'))) {
-    return '';
+    return null;
   }
 
   const matched = taskData.filter((item) => {
@@ -447,11 +509,11 @@ function answerReturnTaiwan(question, taskData, currentDate) {
 
 function answerArrivalSanJose(question, taskData, peopleData) {
   const q = normalizeQuestion(question);
-  if (!(q.includes('聖荷西') || /San Jose|SJC/i.test(q))) return '';
+  if (!(q.includes('聖荷西') || /San Jose|SJC/i.test(q))) return null;
 
   const allNames = peopleData.map((p) => p.name).filter(Boolean);
   const member = findBestMemberInQuestion(q, allNames);
-  if (!member) return '';
+  if (!member) return null;
 
   const found = taskData.find((item) => cleanText(item.name) === member || cleanText(item.name).includes(member));
   if (!found) return `${member} 目前沒有班機資料。`;
@@ -463,37 +525,30 @@ function answerMemberSchedule(question, tripData, peopleData) {
   const q = normalizeQuestion(question);
   const allNames = peopleData.map((p) => p.name).filter(Boolean);
   const member = findBestMemberInQuestion(q, allNames);
-  if (!member || !q.includes('行程')) return '';
+  if (!member || !q.includes('行程')) return null;
 
   const items = tripData.filter((item) => includesMember(item.members, member)).sort(sortByDateTime);
   if (!items.length) return `${member} 目前沒有行程資料。`;
 
-  const lines = [`【${member} 的行程】`];
-  items.forEach((item) => {
-    lines.push(
-      `- ${item.date} ${item.time || '時間未填'}｜${item.activity || '未命名行程'}${
-        cleanText(item.locationDisplay || item.location) ? `｜${cleanText(item.locationDisplay || item.location)}` : ''
-      }`
-    );
-  });
-  return lines.join('\n');
+  return `【${member} 的行程】\n${items
+    .map((item) => {
+      const location = cleanText(item.locationDisplay || item.address);
+      return `- ${item.date} ${item.time || '時間未填'}｜${item.activity || '未命名行程'}${location ? `｜${location}` : ''}`;
+    })
+    .join('\n')}`;
 }
 
 function answerMealLocation(question, tripData, peopleData, currentDate) {
   const q = normalizeQuestion(question);
   const dateToken = extractDateToken(q, currentDate);
+  const mealIntent = mealIntentFromQuestion(q);
+  const asksMeal = !!mealIntent;
+  if (!asksMeal) return null;
+
   const allNames = peopleData.map((p) => p.name).filter(Boolean);
   const member = findBestMemberInQuestion(q, allNames);
 
-  const asksMeal = q.includes('晚餐') || q.includes('午餐') || q.includes('餐會') || q.includes('餐廳');
-  const asksLocation = q.includes('哪裡') || q.includes('在哪') || q.includes('地址') || q.includes('地點');
-
-  if (!asksMeal || !asksLocation) return '';
-
-  let candidates = tripData.filter((item) => {
-    const hay = flattenSearchableText(item);
-    return /餐|晚宴|午宴|Reception/i.test(hay);
-  });
+  let candidates = tripData.filter((item) => isMealItem(item));
 
   if (dateToken) {
     candidates = candidates.filter((item) => normalizeDate(item.date) === dateToken);
@@ -504,32 +559,58 @@ function answerMealLocation(question, tripData, peopleData, currentDate) {
     if (memberFiltered.length) candidates = memberFiltered;
   }
 
-  if (!candidates.length) return '';
+  candidates = candidates
+    .map((item) => ({
+      ...item,
+      __mealScore: scoreMealByIntent(item, mealIntent),
+    }))
+    .filter((item) => item.__mealScore > 0 || mealIntent === 'meal')
+    .sort((a, b) => {
+      if (b.__mealScore !== a.__mealScore) return b.__mealScore - a.__mealScore;
+      return sortByDateTime(a, b);
+    });
 
-  const best = candidates.sort(sortByDateTime)[0];
-  const locationText = cleanText(best.locationDisplay || best.location);
+  if (!candidates.length) return null;
 
-  const lines = [
-    member && dateToken
-      ? `【${member} ${dateToken} 用餐地點】`
-      : dateToken
-      ? `【${dateToken} 用餐地點】`
-      : '【用餐地點】',
-    `- 活動：${best.activity || '未命名餐會'}`,
-  ];
+  const mealLabel =
+    mealIntent === 'breakfast'
+      ? '早餐'
+      : mealIntent === 'lunch'
+      ? '午餐'
+      : mealIntent === 'dinner'
+      ? '晚餐'
+      : '餐會';
 
-  if (best.date || best.time) lines.push(`- 日期時間：${cleanText(best.date)} ${cleanText(best.time)}`.trim());
-  if (locationText) lines.push(`- 地點：${locationText}`);
-  if (best.localMapHref) lines.push(`地圖：${best.localMapHref}`);
-  if (best.note) lines.push(`- 補充：${best.note}`);
+  const titleParts = [];
+  if (dateToken) titleParts.push(dateToken);
+  if (member) titleParts.push(member);
+  titleParts.push(mealLabel);
+
+  const lines = [];
+  lines.push(`【${titleParts.join(' ')}】`);
+  if (candidates.length > 1) lines.push(`共有 ${candidates.length} 個`);
+
+  candidates.forEach((item, index) => {
+    const locationText = cleanText(item.locationDisplay || item.address);
+    lines.push('');
+    lines.push(`${index + 1}.`);
+    lines.push(`- 活動：${item.activity || '未命名餐會'}`);
+    if (item.date || item.time) lines.push(`- 日期時間：${cleanText(item.date)} ${cleanText(item.time)}`.trim());
+    if (locationText) lines.push(`- 地點：${locationText}`);
+    if (item.localMapHref) lines.push(`地圖：${item.localMapHref}`);
+    const webLink = cleanText(item.officialLinkHref || item.linkUrlHref);
+    if (webLink) lines.push(`連結：${webLink}`);
+  });
 
   return lines.join('\n');
 }
 
 function answerLocationQuestion(question, tripData, referenceData, currentDate) {
   const q = normalizeQuestion(question);
-  const asksLocation = q.includes('哪裡') || q.includes('在哪') || q.includes('地址') || q.includes('地點') || q.includes('地圖');
-  if (!asksLocation) return '';
+  const asksLocation =
+    q.includes('哪裡') || q.includes('在哪') || q.includes('地址') || q.includes('地點') || q.includes('地圖');
+
+  if (!asksLocation) return null;
 
   const dateToken = extractDateToken(q, currentDate);
 
@@ -548,7 +629,17 @@ function answerLocationQuestion(question, tripData, referenceData, currentDate) 
 
   if (tripCandidates.length) {
     const best = tripCandidates.sort(sortByDateTime)[0];
-    return `【地點資訊】\n${formatLocationBlock(best)}`;
+    const lines = ['【地點資訊】'];
+    lines.push(`- 項目：${cleanText(best.activity) || '未命名活動'}`);
+    if (best.date || best.time) {
+      lines.push(`- 日期時間：${cleanText(best.date)} ${cleanText(best.time)}`.trim());
+    }
+    const locationText = cleanText(best.locationDisplay || best.address);
+    if (locationText) lines.push(`- 地點：${locationText}`);
+    if (best.localMapHref) lines.push(`地圖：${best.localMapHref}`);
+    const webLink = cleanText(best.officialLinkHref || best.linkUrlHref);
+    if (webLink) lines.push(`連結：${webLink}`);
+    return lines.join('\n');
   }
 
   const refCandidates = referenceData.filter((item) => {
@@ -565,7 +656,7 @@ function answerLocationQuestion(question, tripData, referenceData, currentDate) 
     return lines.join('\n');
   }
 
-  return '';
+  return null;
 }
 
 function deterministicAnswer(question, context, currentDate) {
@@ -573,14 +664,12 @@ function deterministicAnswer(question, context, currentDate) {
   const taskData = (Array.isArray(context?.taskData) ? context.taskData : []).map(mapTaskItem);
   const referenceData = (Array.isArray(context?.referenceData) ? context.referenceData : []).map(mapReferenceItem);
   const peopleData = (Array.isArray(context?.peopleData) ? context.peopleData : []).map(mapPeopleItem);
-  const prepData = Array.isArray(context?.prepData) ? context.prepData : [];
 
   const q = normalizeQuestion(question);
 
   const strategies = [
-    () => (q.includes('人員名單') ? answerPeopleList(peopleData) : ''),
-    () => (q.includes('禮品') || q.includes('準備') || q.includes('行前') ? answerPrep(prepData) : ''),
-    () => (q.includes('出訪團規劃') ? answerTripPlan(referenceData) : ''),
+    () => (q.includes('人員名單') ? answerPeopleList(peopleData) : null),
+    () => answerPhoneQuestion(q, taskData, peopleData),
     () => answerConferenceInfo(q, referenceData),
     () => answerDaySchedule(q, tripData, currentDate),
     () => answerReturnTaiwan(q, taskData, currentDate),
@@ -607,12 +696,12 @@ function scoreTripItem(item, question, dateToken, member) {
   if (member && includesMember(item.members, member)) score += 10;
 
   if (q.includes('地址') || q.includes('地點') || q.includes('哪裡') || q.includes('在哪') || q.includes('地圖')) {
-    if (cleanText(item.locationDisplay || item.location)) score += 8;
+    if (cleanText(item.locationDisplay || item.address)) score += 8;
     if (cleanText(item.localMapHref || item.localMap)) score += 8;
   }
 
   if (q.includes('會場') && /HIMSS|GTC|會場|conference/i.test(haystack)) score += 10;
-  if ((q.includes('晚餐') || q.includes('午餐') || q.includes('餐會')) && /餐|晚宴|午宴|Reception/i.test(haystack)) score += 8;
+  if ((q.includes('晚餐') || q.includes('午餐') || q.includes('餐會') || q.includes('吃飯')) && isMealItem(item)) score += 10;
   if (q.includes('行程')) score += 4;
 
   const keywords = ['HIMSS', 'GTC', '餐', '晚餐', '午餐', '參訪', '住宿', '會議', '返台', '出發', '聖荷西', '晚宴', '接駁'];
@@ -631,7 +720,7 @@ function scoreTaskItem(item, question, dateToken, member) {
   if (dateToken && haystack.includes(dateToken)) score += 12;
   if (member && cleanText(item.name) === member) score += 10;
 
-  ['返台', '回程', '返程', '出發', '搭機', '班機', '抵達', '聖荷西', '台灣', '桃園', 'TPE', 'SJC', 'San Jose'].forEach((kw) => {
+  ['返台', '回程', '返程', '出發', '搭機', '班機', '抵達', '聖荷西', '台灣', '桃園', 'TPE', 'SJC', 'San Jose', '電話'].forEach((kw) => {
     if (q.includes(kw) && haystack.includes(kw)) score += 4;
   });
 
@@ -658,7 +747,6 @@ function pickRelevantContext(question, context, currentDate) {
   const taskData = (Array.isArray(context?.taskData) ? context.taskData : []).map(mapTaskItem);
   const referenceData = (Array.isArray(context?.referenceData) ? context.referenceData : []).map(mapReferenceItem);
   const peopleData = (Array.isArray(context?.peopleData) ? context.peopleData : []).map(mapPeopleItem);
-  const prepData = Array.isArray(context?.prepData) ? context.prepData : [];
 
   const allNames = peopleData.map((p) => p.name).filter(Boolean);
   const member = findBestMemberInQuestion(q, allNames);
@@ -688,11 +776,6 @@ function pickRelevantContext(question, context, currentDate) {
     ? peopleData.filter((p) => cleanText(p.name) === member || q.includes(cleanText(p.name))).slice(0, 10)
     : peopleData.filter((p) => q.includes(cleanText(p.name))).slice(0, 10);
 
-  const relevantPrep =
-    q.includes('禮品') || q.includes('準備') || q.includes('行前')
-      ? prepData.slice(0, 20)
-      : [];
-
   return {
     dateToken,
     member,
@@ -700,13 +783,11 @@ function pickRelevantContext(question, context, currentDate) {
     relevantTasks,
     relevantRefs,
     mentionedPeople,
-    relevantPrep,
     summary: {
       tripCount: tripData.length,
       taskCount: taskData.length,
       refCount: referenceData.length,
       peopleCount: peopleData.length,
-      prepCount: prepData.length,
     },
   };
 }
@@ -723,16 +804,16 @@ function buildStructuredHint(question, picked) {
     lines.push('\n【最相關的行程資料】');
     picked.relevantTrips.forEach((item, idx) => {
       lines.push(
-        `${idx + 1}. 日期=${cleanText(item.date)}；時間=${cleanText(item.time)}；活動=${cleanText(item.activity)}；類型=${cleanText(item.activityType)}；分類=${cleanText(item.category)}；地點=${cleanText(item.locationDisplay || item.location)}；地圖=${cleanText(item.localMapHref || item.localMap)}；成員=${cleanText(item.members)}；活動窗口=${cleanText(item.contact)}；交通=${cleanText(item.transitTime)}；備註=${cleanText(item.note)}；附件=${cleanText(item.attachmentUrl)}；官方連結=${cleanText(item.officialLinkHref || item.officialLink || item.linkUrlHref || item.linkUrl)}`
+        `${idx + 1}. 日期=${cleanText(item.date)}；時間=${cleanText(item.time)}；活動=${cleanText(item.activity)}；類型=${cleanText(item.activityType)}；分類=${cleanText(item.category)}；地址=${cleanText(item.address)}；地點顯示=${cleanText(item.locationDisplay)}；地圖=${cleanText(item.localMapHref || item.localMap)}；成員=${cleanText(item.members)}；活動窗口=${cleanText(item.contact)}；交通=${cleanText(item.transitTime)}；備註=${cleanText(item.note)}；官方連結=${cleanText(item.officialLinkHref || item.officialLink || item.linkUrlHref || item.linkUrl)}`
       );
     });
   }
 
   if (picked.relevantTasks.length) {
-    lines.push('\n【最相關的班機 / 飲食資料】');
+    lines.push('\n【最相關的任務 / 班機 / 電話資料】');
     picked.relevantTasks.forEach((item, idx) => {
       lines.push(
-        `${idx + 1}. 姓名=${cleanText(item.name)}；班機=${cleanText(item.fly)}；飲食=${cleanText(item.diet)}；禁忌=${cleanText(item.foodsAvoid)}`
+        `${idx + 1}. 姓名=${cleanText(item.name)}；電話=${cleanText(item.phone)}；班機=${cleanText(item.fly)}；任務=${cleanText(item.task)}；備註=${cleanText(item.note)}；飲食=${cleanText(item.diet)}；禁忌=${cleanText(item.foodsAvoid)}`
       );
     });
   }
@@ -740,23 +821,14 @@ function buildStructuredHint(question, picked) {
   if (picked.relevantRefs.length) {
     lines.push('\n【最相關的參考資料】');
     picked.relevantRefs.forEach((item, idx) => {
-      lines.push(
-        `${idx + 1}. 項目=${cleanText(item.item)}；內容=${cleanText(item.content)}；連結=${cleanText(item.linkHref || item.link)}`
-      );
+      lines.push(`${idx + 1}. 項目=${cleanText(item.item)}；內容=${cleanText(item.content)}；連結=${cleanText(item.linkHref || item.link)}`);
     });
   }
 
   if (picked.mentionedPeople.length) {
     lines.push('\n【問題中提到的人員】');
     picked.mentionedPeople.forEach((item, idx) => {
-      lines.push(`${idx + 1}. 姓名=${cleanText(item.name)}；任務=${cleanText(item.task)}；備註=${cleanText(item.note)}`);
-    });
-  }
-
-  if (picked.relevantPrep.length) {
-    lines.push('\n【準備資料】');
-    picked.relevantPrep.forEach((item, idx) => {
-      lines.push(`${idx + 1}. ${JSON.stringify(item)}`);
+      lines.push(`${idx + 1}. 姓名=${cleanText(item.name)}；任務=${cleanText(item.task)}；電話=${cleanText(item.phone)}；備註=${cleanText(item.note)}`);
     });
   }
 
@@ -765,7 +837,6 @@ function buildStructuredHint(question, picked) {
   lines.push(`taskData 筆數=${picked.summary.taskCount}`);
   lines.push(`referenceData 筆數=${picked.summary.refCount}`);
   lines.push(`peopleData 筆數=${picked.summary.peopleCount}`);
-  lines.push(`prepData 筆數=${picked.summary.prepCount}`);
 
   return lines.join('\n');
 }
@@ -805,7 +876,7 @@ export default async function handler(req, res) {
 你只能依據提供資料回答，不能自行用外部常識補資料。
 若資料中只有地圖連結但沒有地址文字，必須明確寫：
 「地址文字未填，已提供地圖連結」
-不能寫「待確認」。
+不能捏造地址。
 
 回答規則：
 1. 一律繁體中文
@@ -814,16 +885,11 @@ export default async function handler(req, res) {
 4. 不要輸出 markdown 連結格式，請直接寫：
    連結：https://...
    地圖：https://...
-5. 若是行程，請依時間順序列出
-6. 若是地址、地點、地圖問題，優先保留：
-   - 項目
-   - 日期時間
-   - 地點
-   - 地圖
-   - 補充
-7. 若資料足夠，不要回答資料不足
-8. 禁止捏造地址
-9. 若使用者問今天、明天、後天、大後天、昨天，請依 currentDate 推算
+5. 若是行程，請依日期、時間順序回答
+6. 若同一天同類型有多筆，例如同一天有兩個晚餐，必須明確寫出共有幾個，不能只回答第一個
+7. 若是電話查詢，只能依 taskData 或 peopleData 中的 phone 欄位回答
+8. 若使用者問今天、明天、後天、大後天、昨天，請依 currentDate 推算
+9. 若資料足夠，不要回答資料不足
 `;
 
     const userPrompt = `
@@ -851,10 +917,7 @@ ${structuredHint}
     console.error('API /api/chat error full =', error);
 
     return res.status(500).json({
-      error:
-        error?.message ||
-        error?.response?.data?.error?.message ||
-        'AI server error',
+      error: error?.message || error?.response?.data?.error?.message || 'AI server error',
     });
   }
 }
