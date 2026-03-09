@@ -24,6 +24,7 @@ import {
   Building2,
   Globe,
   MessageCircle,
+  Phone,
 } from 'lucide-react';
 
 // ===== Google Sheet CSV 匯出網址 =====
@@ -208,20 +209,6 @@ function looksLikeGoogleMap(url) {
   return /google\.com\/maps|maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google/i.test(link);
 }
 
-function removeUrlsFromText(value) {
-  return cleanText(value)
-    .replace(/https?:\/\/[^\s]+/gi, '')
-    .replace(/www\.[^\s]+/gi, '')
-    .replace(/\n{2,}/g, '\n')
-    .trim();
-}
-
-function extractAddressText(value) {
-  const raw = cleanText(value);
-  if (!raw) return '';
-  return removeUrlsFromText(raw);
-}
-
 function buildGoogleMapSearchUrl(keyword) {
   const text = cleanText(keyword);
   if (!text) return '';
@@ -255,27 +242,22 @@ function extractReadablePlaceFromMapUrl(url) {
   }
 }
 
-function buildDisplayLocation(rawLocation, mapHref) {
-  const locationText = cleanText(rawLocation);
-  const addressOnlyText = extractAddressText(rawLocation);
+function buildDisplayLocation(addressText, mapHref) {
+  const address = cleanText(addressText);
 
-  if (addressOnlyText) {
-    return addressOnlyText;
-  }
+  if (address) return address;
 
   const parsedFromMap = extractReadablePlaceFromMapUrl(mapHref);
   if (parsedFromMap) return parsedFromMap;
 
-  if (mapHref || looksLikeGoogleMap(locationText)) {
-    return '地址文字未填，已提供地圖連結';
-  }
+  if (mapHref) return '地址文字未填，已提供地圖連結';
 
   return '';
 }
 
 function buildEmbedMapUrl(item) {
-  const mapHref = normalizeLink(item.localMapHref || item.localMap);
-  const locationText = cleanText(item.locationDisplay || item.location);
+  const mapHref = normalizeLink(item.localMapHref || item.localMap || item.location);
+  const locationText = cleanText(item.locationDisplay || item.address);
 
   if (locationText && locationText !== '地址文字未填，已提供地圖連結') {
     return `https://www.google.com/maps?q=${encodeURIComponent(locationText)}&output=embed`;
@@ -440,30 +422,25 @@ function matchType(item, target) {
 function mapTripRows(rawObjects) {
   return rawObjects
     .map((row) => {
-      const rawLocation = getValue(row, ['location']);
+      const address = getValue(row, ['address', '地址']);
+      const mapLink = getValue(row, ['location', 'localmap', 'localMap', 'mapLink']);
       const officialLink = getValue(row, ['officialLink']);
       const linkUrl = getValue(row, ['linkUrl']);
-      const localMap = getValue(row, ['localmap', 'localMap', 'mapLink']);
 
-      const locationHref = normalizeLink(rawLocation);
+      const mapHref = normalizeLink(mapLink);
       const officialHref = normalizeLink(officialLink);
       const linkHref = normalizeLink(linkUrl);
-      const localMapHref = normalizeLink(localMap);
 
-      const locationHasMap = looksLikeGoogleMap(rawLocation);
       const officialIsMap = officialHref && looksLikeGoogleMap(officialLink);
       const linkIsMap = linkHref && looksLikeGoogleMap(linkUrl);
 
-      const addressText = extractAddressText(rawLocation);
-
       const finalMapHref =
-        localMapHref ||
-        (locationHasMap ? locationHref : '') ||
+        mapHref ||
         (officialIsMap ? officialHref : '') ||
         (linkIsMap ? linkHref : '') ||
-        (addressText ? buildGoogleMapSearchUrl(addressText) : '');
+        (address ? buildGoogleMapSearchUrl(address) : '');
 
-      const locationDisplay = buildDisplayLocation(rawLocation, finalMapHref);
+      const locationDisplay = buildDisplayLocation(address, finalMapHref);
 
       return {
         category: getValue(row, ['category']),
@@ -471,14 +448,15 @@ function mapTripRows(rawObjects) {
         date: normalizeDate(getValue(row, ['date'])),
         time: getValue(row, ['time']),
         activity: getValue(row, ['activity']),
-        location: addressText,
+        address,
+        location: mapLink,
         locationDisplay,
         members: getValue(row, ['members']),
         contact: getValue(row, ['contact']),
         transitTime: getValue(row, ['transitTime']),
         note: getValue(row, ['note']),
         attachmentUrl: getValue(row, ['attachmentUrl']),
-        localMap,
+        localMap: mapLink,
         localMapHref: finalMapHref,
         linkUrl,
         linkUrlHref: !linkIsMap ? linkHref : '',
@@ -498,8 +476,8 @@ function mapTripRows(rawObjects) {
         item.activityType ||
         item.date ||
         item.activity ||
+        item.address ||
         item.location ||
-        item.locationDisplay ||
         item.members
     );
 }
@@ -523,8 +501,9 @@ function mapTaskRows(rawObjects) {
       fly: getValue(row, ['fly']),
       diet: getValue(row, ['diet']),
       foodsAvoid: getValue(row, ['foods avoid', 'foodsAvoid']),
+      phone: getValue(row, ['phone', '電話']),
     }))
-    .filter((item) => item.name || item.fly || item.diet || item.foodsAvoid);
+    .filter((item) => item.name || item.fly || item.diet || item.foodsAvoid || item.phone);
 }
 
 function mapSimpleRows(rawObjects) {
@@ -591,7 +570,7 @@ function DetailRow({ icon, label, value }) {
 
 function ResourceButtons({ item }) {
   const attachmentHref = normalizeLink(item.attachmentUrl);
-  const mapHref = normalizeLink(item.localMapHref || item.localMap);
+  const mapHref = normalizeLink(item.localMapHref || item.localMap || item.location);
 
   let webHref =
     normalizeLink(item.officialLinkHref || item.officialLink) ||
@@ -653,7 +632,7 @@ function ResourceButtons({ item }) {
 }
 
 function MapPreview({ item }) {
-  const mapHref = normalizeLink(item.localMapHref || item.localMap);
+  const mapHref = normalizeLink(item.localMapHref || item.localMap || item.location);
   const embedUrl = buildEmbedMapUrl(item);
 
   if (!mapHref || !embedUrl) return null;
@@ -676,7 +655,7 @@ function MapPreview({ item }) {
         </a>
       </div>
       <iframe
-        title={`map-${item.activity || item.locationDisplay || item.location}`}
+        title={`map-${item.activity || item.locationDisplay || item.address}`}
         src={embedUrl}
         className="h-64 w-full"
         loading="lazy"
@@ -716,7 +695,7 @@ function InfoCard({ item }) {
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <DetailRow icon={<CalendarDays size={16} />} label="日期" value={item.date} />
         <DetailRow icon={<Clock size={16} />} label="時間" value={item.time} />
-        <DetailRow icon={<MapPin size={16} />} label="地點" value={item.locationDisplay || item.location} />
+        <DetailRow icon={<MapPin size={16} />} label="地點" value={item.locationDisplay || item.address} />
         <DetailRow icon={<Users size={16} />} label="成員" value={item.members} />
         <DetailRow icon={<User size={16} />} label="活動窗口" value={item.contact} />
         <DetailRow icon={<Car size={16} />} label="交通時間" value={item.transitTime} />
@@ -845,8 +824,7 @@ export default function App() {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      text:
-        '您好，我是秀傳AI小秘書。\n\n可直接查詢：\n- 3/15行程\n- 3/15誰回台灣\n- 黃靖媛3/8晚餐在哪裡吃\n- 郭昭宏何時抵達聖荷西',
+      text: '您好，我是秀傳AI小秘書。\n可直接查詢：\n- 3/15行程\n- 3/15誰回台灣\n- 晚餐在哪裡',
     },
   ]);
   const [input, setInput] = useState('');
@@ -990,6 +968,10 @@ export default function App() {
     );
   }, [taskData]);
 
+  const phoneData = useMemo(() => {
+    return taskData.filter((item) => cleanText(item.name) || cleanText(item.phone));
+  }, [taskData]);
+
   const tripPlanLink = useMemo(() => {
     const raw = referenceData.find((item) => cleanText(item.item).includes('出訪團規劃'))?.linkHref || '';
     return raw;
@@ -1028,15 +1010,9 @@ export default function App() {
   }, [referenceData]);
 
   const quickQuestions = [
-    '3/9有誰會從台灣搭機出發',
     '3/15行程',
     '3/15誰回台灣',
-    '3/15那些人搭機返台',
-    '黃靖媛3/8晚餐在哪裡吃',
-    '郭昭宏何時抵達聖荷西',
-    '人員名單',
-    '禮品準備',
-    '出訪團規劃',
+    '晚餐在哪裡',
     'HIMSS會場在哪裡',
   ];
 
@@ -1048,6 +1024,14 @@ export default function App() {
     if (query.includes('人員名單')) {
       const names = (peopleData || []).map((p) => p.name).filter(Boolean);
       return names.length ? `【人員名單】\n${names.join('、')}` : '目前無人員名單資料。';
+    }
+
+    if (query.includes('電話') || query.includes('電話號碼') || query.includes('聯絡電話')) {
+      const rows = phoneData.filter((item) => cleanText(item.name) || cleanText(item.phone));
+      if (!rows.length) return '目前無電話號碼資料。';
+      return `【電話號碼】\n${rows
+        .map((item) => `- ${item.name || '未填姓名'}：${item.phone || '未提供'}`)
+        .join('\n')}`;
     }
 
     if (query.includes('禮品') || query.includes('準備')) {
@@ -1078,8 +1062,8 @@ export default function App() {
         .map(
           (item) =>
             `- ${item.time || '時間未填'}｜${item.activity || '未命名行程'}${
-              cleanText(item.locationDisplay || item.location)
-                ? `｜${cleanText(item.locationDisplay || item.location)}`
+              cleanText(item.locationDisplay || item.address)
+                ? `｜${cleanText(item.locationDisplay || item.address)}`
                 : ''
             }`
         )
@@ -1122,8 +1106,8 @@ export default function App() {
         .map(
           (item) =>
             `- ${item.date} ${item.time || '時間未填'}｜${item.activity || '未命名行程'}${
-              cleanText(item.locationDisplay || item.location)
-                ? `｜${cleanText(item.locationDisplay || item.location)}`
+              cleanText(item.locationDisplay || item.address)
+                ? `｜${cleanText(item.locationDisplay || item.address)}`
                 : ''
             }`
         )
@@ -1132,7 +1116,7 @@ export default function App() {
 
     return (
       '目前尚未成功由 AI 精準回覆，先以基本規則回應。\n\n' +
-      '可改問例如：\n- 3/15行程\n- 3/15那些人搭機返台\n- 黃靖媛3/8晚餐在哪裡吃\n- 郭昭宏何時抵達聖荷西'
+      '可改問例如：\n- 3/15行程\n- 3/15誰回台灣\n- 晚餐在哪裡\n- 電話號碼'
     );
   }
 
@@ -1543,7 +1527,7 @@ export default function App() {
             <SectionCard
               title="重要資訊與注意事項"
               icon={<AlertCircle size={20} className="text-amber-700" />}
-              subtitle="包含出訪文件、飲食資訊與行程注意事項。"
+              subtitle="包含出訪文件、飲食資訊、電話號碼與行程注意事項。"
             >
               <div className="mb-5 flex flex-wrap gap-2">
                 <button
@@ -1565,6 +1549,16 @@ export default function App() {
                   }`}
                 >
                   飲食資訊
+                </button>
+                <button
+                  onClick={() => setNoticeTab('phone')}
+                  className={`rounded-2xl px-4 py-2 text-sm font-medium ${
+                    noticeTab === 'phone'
+                      ? 'bg-emerald-700 text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  電話號碼
                 </button>
                 <button
                   onClick={() => setNoticeTab('travel')}
@@ -1682,6 +1676,27 @@ export default function App() {
                 </div>
               )}
 
+              {noticeTab === 'phone' && (
+                <div className="grid gap-3">
+                  {phoneData.length > 0 ? (
+                    phoneData.map((item, index) => (
+                      <div key={`${item.name}-${index}`} className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                        <div className="flex items-center gap-2 text-base font-bold text-slate-800">
+                          <Phone size={16} className="text-emerald-700" />
+                          {item.name || '未填姓名'}
+                        </div>
+                        <div className="mt-2 text-sm text-slate-700">
+                          <span className="font-semibold">電話：</span>
+                          {item.phone || '未提供'}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <EmptyCard title="目前無電話號碼資料" />
+                  )}
+                </div>
+              )}
+
               {noticeTab === 'travel' && (
                 <div className="space-y-4">
                   {himssHandbookLink && (
@@ -1744,10 +1759,10 @@ export default function App() {
             <SectionCard
               title="AI 助手"
               icon={<Bot size={22} className="text-emerald-700" />}
-              subtitle="以規則判讀優先，搭配 OpenAI 補強，用於查詢行程、地址、地圖、班機、文件與準備事項。"
+              subtitle="可直接詢問地址、地點、某日全部行程、返台班機、某人安排、電話與文件資訊。"
             >
-              <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[340px_1fr]">
-                <div className="rounded-3xl border border-slate-200 bg-[linear-gradient(180deg,#f0fdf4_0%,#ecfeff_100%)] p-6 shadow-sm">
+              <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[320px_1fr]">
+                <div className="rounded-3xl border border-slate-200 bg-[linear-gradient(180deg,#f0fdf4_0%,#ecfeff_100%)] p-5 shadow-sm">
                   <div className="space-y-4 text-center">
                     <div className="inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-white/70 px-3 py-1 text-xs font-semibold tracking-[0.18em] text-emerald-600">
                       <MessageCircle size={14} />
@@ -1757,13 +1772,13 @@ export default function App() {
                     <img
                       src="/xiuchuan-ai-secretary.png"
                       alt="秀傳AI小秘書"
-                      className="mx-auto w-56 md:w-64 lg:w-72 drop-shadow-lg"
+                      className="mx-auto w-48 md:w-56 lg:w-60 drop-shadow-lg"
                     />
 
                     <div className="text-2xl font-bold text-emerald-700">秀傳AI小秘書</div>
 
                     <p className="text-sm leading-7 text-slate-600">
-                      協助查詢每日行程、國際航空、餐會、住宿、參訪、會議、文件連結與禮品準備。
+                      協助查詢行程、地址、地圖、班機、電話、文件與禮品準備。
                     </p>
 
                     <div className="flex items-center justify-center gap-2 text-sm text-emerald-700">
@@ -1773,12 +1788,12 @@ export default function App() {
 
                     <div className="rounded-2xl border border-white/70 bg-white/70 p-4 text-left">
                       <div className="mb-3 text-sm font-semibold text-slate-700">快速提問</div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex gap-2 overflow-x-auto pb-1">
                         {quickQuestions.map((q) => (
                           <button
                             key={q}
                             onClick={() => handleSendMessage(null, q)}
-                            className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
+                            className="inline-flex flex-shrink-0 items-center gap-2 rounded-2xl bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:bg-slate-50"
                           >
                             <Sparkles size={15} />
                             {q}
@@ -1792,7 +1807,7 @@ export default function App() {
                 <div className="flex h-[620px] flex-col rounded-3xl border border-slate-200 bg-white shadow-sm">
                   <div className="border-b border-slate-100 px-4 py-4 md:px-5">
                     <p className="text-sm leading-7 text-slate-600 md:text-base">
-                      可直接詢問地址、地點、某日全部行程、返台班機、某人相關安排、文件與官方資訊。
+                      可直接詢問地址、地點、某日全部行程、返台班機、某人相關安排、電話號碼、文件與官方資訊。
                     </p>
                   </div>
 
@@ -1848,7 +1863,7 @@ export default function App() {
                       <input
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        placeholder="例如：3/15那些人搭機返台"
+                        placeholder="例如：電話號碼、3/15誰回台灣"
                         className="flex-1 rounded-2xl border border-slate-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                       />
                       <button
